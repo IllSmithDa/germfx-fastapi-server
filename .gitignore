@@ -1,0 +1,67 @@
+.env# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Logs
+*.log
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Unit test / coverage reports
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+
+# Database
+*.db
+*.sqlite3
+
+# Docker
+*.pid
+*.seed
+*.tar
+*.bak
+docker-compose.override.yml
+db_data/   # if you have a mounted Postgres volume
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example   # but keep a sample with fake values
+
+# Caches
+__pycache__/
+.cache/
+*.pyc
+*.pyo
+
+# Uvicorn / FastAPI reload artifacts
+*.coverage.*
+
+# Misc
+screenshots/
+
+backups/

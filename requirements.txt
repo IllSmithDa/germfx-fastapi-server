@@ -1,0 +1,33 @@
+fastapi
+uvicorn[standard]
+SQLAlchemy
+psycopg2-binary
+python-dotenv
+httpx
+sendgrid
+
+pydantic[email]
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+cryptography
+alembic==1.16.5
+
+# Testing dependencies
+pytest
+pytest-mock
+
+# profanity test
+better-profanity
+
+# For token generation and verification
+itsdangerous
+
+# For email sending (if using Resend)
+resend
+
+# For AWS SES (if we switch to that in the future)
+boto3
+
+# For PDF generation 
+reportlab
