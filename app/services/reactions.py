@@ -53,7 +53,6 @@ def _get_existing_reaction(
 def get_reaction_summary(
     db: Session,
     *,
-    user_id: int,
     content_type: str,
     source_item_id: int,
 ) -> Dict[str, Any]:
@@ -72,7 +71,6 @@ def get_reaction_summary(
 
     user_reaction = _get_existing_reaction(
         db,
-        user_id=user_id,
         content_type=content_type,
         source_item_id=source_item_id,
     )
