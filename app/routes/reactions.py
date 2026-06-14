@@ -89,7 +89,7 @@ def read_bulk_reaction_summaries(
 
         return get_bulk_reaction_summaries(
             db,
-            user_id=current_user.id,
+            user_id=current_user.id if current_user else None,
             content_type=content_type,
             source_item_ids=source_item_ids,
         )

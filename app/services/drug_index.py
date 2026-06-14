@@ -20,13 +20,79 @@ def _looks_like_ingredient_soup(name: str) -> bool:
     # Optional noise filter for giant comma-separated ingredient lists
     return name.count(",") >= 5
 
+def _clean_code(value: Any) -> str | None:
+    code = str(value or "").strip()
+
+    if not code:
+        return None
+
+    return code
+
+def _digits_only(value: Any) -> str | None:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+
+    return digits or None
+
+
+def _code_variants(value: Any) -> list[str]:
+    raw = _clean_code(value)
+    digits = _digits_only(value)
+
+    values: list[str] = []
+
+    if raw:
+        values.append(raw)
+
+    if digits and digits != raw:
+        values.append(digits)
+
+    return values
+
+
+def _clean_code_list(values: Any) -> list[str]:
+    if not values:
+        return []
+
+    if not isinstance(values, list):
+        values = [values]
+
+    out: list[str] = []
+    seen: set[str] = set()
+
+    for value in values:
+        for code in _code_variants(value):
+            if code in seen:
+                continue
+
+            seen.add(code)
+            out.append(code)
+
+    return out
+
+def _merge_unique_codes(
+    existing: list[str] | None,
+    incoming: list[str] | None,
+) -> list[str] | None:
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    for value in (existing or []) + (incoming or []):
+        for code in _code_variants(value):
+            if code in seen:
+                continue
+
+            seen.add(code)
+            merged.append(code)
+
+    return merged or None
 
 def upsert_drug_index(db: Session, items: List[Dict[str, Any]]) -> None:
     """
-    items: [{name, type, manufacturer, score?, ...}]
+    items: [{name, type, manufacturer, score?, upc_codes?, ndc_codes?}]
     """
     for it in items:
         name = (it.get("name") or "").strip()
+
         if not name:
             continue
 
@@ -35,65 +101,59 @@ def upsert_drug_index(db: Session, items: List[Dict[str, Any]]) -> None:
 
         # Skip entries that are too long or clearly poor search candidates.
         if len(name) > MAX_DRUG_INDEX_NAME_LEN or len(norm) > MAX_DRUG_INDEX_NAME_LEN:
-            '''
-            print(
-                "Skipping overlong DrugIndex entry:",
-                {
-                    "name_len": len(name),
-                    "normalized_name_len": len(norm),
-                    "manufacturer_len": len(manufacturer) if manufacturer else 0,
-                    "name": name,
-                    "manufacturer": manufacturer,
-                },
-            )
-            '''
             continue
 
         if manufacturer and len(manufacturer) > MAX_MANUFACTURER_LEN:
             manufacturer = manufacturer[:MAX_MANUFACTURER_LEN]
 
         if _looks_like_ingredient_soup(name):
-
-            '''
-            print(
-                "Skipping ingredient-list DrugIndex entry:",
-                {
-                    "name": name,
-                    "manufacturer": manufacturer,
-                },
-            )
-            '''
             continue
 
         kind = (it.get("type") or "brand").lower()
-        meta = (
-            {k: it.get(k) for k in ("openfda_ids", "rxcui", "ndc", "raw")}
-            if isinstance(it, dict)
-            else None
+
+        incoming_upc_codes = _clean_code_list(
+            it.get("upc_codes") or it.get("upc") or []
         )
 
-        stmt = insert(DrugIndex).values(
-            name=name,
-            normalized_name=norm,
-            kind=kind,
-            manufacturer=manufacturer,
-            source="openfda",
-            openfda_meta=meta,
-        ).on_conflict_do_update(
-            constraint="uq_drug_index_name_kind",
-            set_={
-                "manufacturer": func.coalesce(
-                    insert(DrugIndex).excluded.manufacturer,
-                    DrugIndex.manufacturer,
-                ),
-                "openfda_meta": func.coalesce(
-                    insert(DrugIndex).excluded.openfda_meta,
-                    DrugIndex.openfda_meta,
-                ),
-                "updated_at": func.now(),
-            },
+        incoming_ndc_codes = _clean_code_list(
+            it.get("ndc_codes") or it.get("ndc") or []
         )
-        db.execute(stmt)
+
+        existing = db.execute(
+            select(DrugIndex).where(
+                DrugIndex.normalized_name == norm,
+                DrugIndex.kind == kind,
+            )
+        ).scalar_one_or_none()
+
+        if existing:
+            if manufacturer and not existing.manufacturer:
+                existing.manufacturer = manufacturer
+
+            existing.upc_codes = _merge_unique_codes(
+                existing.upc_codes,
+                incoming_upc_codes,
+            )
+
+            existing.ndc_codes = _merge_unique_codes(
+                existing.ndc_codes,
+                incoming_ndc_codes,
+            )
+
+            existing.updated_at = func.now()
+            continue
+
+        db.add(
+            DrugIndex(
+                name=name,
+                normalized_name=norm,
+                kind=kind,
+                manufacturer=manufacturer,
+                source="openfda",
+                upc_codes=incoming_upc_codes or None,
+                ndc_codes=incoming_ndc_codes or None,
+            )
+        )
 
     db.commit()
 

@@ -146,17 +146,18 @@ def get_authenticated_user(
 
     return user
 
-
 def get_optional_user(
     access_token: Optional[str] = Cookie(None, alias="access_token"),
+    authorization: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    if not access_token:
-        return None
-
     try:
-        return get_authenticated_user(access_token=access_token, db=db)
-    except Exception:
+        return get_authenticated_user(
+            access_token=access_token,
+            authorization=authorization,
+            db=db,
+        )
+    except HTTPException:
         return None
     
 

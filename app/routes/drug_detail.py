@@ -1,4 +1,5 @@
 from app.services.upc_drug_details import get_or_create_drug_detail_by_code
+from app.services.upc_drug_index import resolve_drug_index_by_code
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.db import get_db
@@ -114,3 +115,43 @@ async def drug_info_by_code(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
+@router.get("/drug-index-by-code")
+async def drug_index_by_code(
+    code: str = Query(
+        ...,
+        min_length=4,
+        max_length=80,
+        description="UPC, package NDC, or product NDC",
+    ),
+    limit: int = Query(25, ge=1, le=100),
+    stale_after_days: int = Query(90, ge=1, le=365),
+    force_resync: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """
+    Scan-code lookup that resolves against DrugIndex, not DrugDetail.
+
+    This is intended for barcode scanner results where the client wants
+    possible DrugIndex matches, not a full saved DrugDetail payload.
+    """
+    try:
+        return await resolve_drug_index_by_code(
+            db,
+            code=code,
+            limit=limit,
+            stale_after_days=stale_after_days,
+            force_resync=force_resync,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        )
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )

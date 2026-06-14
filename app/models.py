@@ -147,7 +147,8 @@ class DrugIndex(Base):
     manufacturer = Column(String(300), nullable=True)
     source = Column(String(40), nullable=False, default="openfda")
     # data from OpenFDA JSON blob
-    openfda_meta = Column(JSONB, nullable=True)
+    ndc_codes = Column(ARRAY(String), nullable=True)
+    upc_codes = Column(ARRAY(String), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(),
                         onupdate=func.now(), nullable=False)

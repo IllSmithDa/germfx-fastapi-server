@@ -1,6 +1,6 @@
 # app/emailer.py
 from __future__ import annotations
-
+import resend
 import logging
 import os
 from typing import Literal
@@ -18,14 +18,12 @@ def _get_provider() -> EmailProvider:
 
 
 def _get_from_email() -> str:
-    return os.getenv("EMAIL_FROM", "SideFX <onboarding@resend.dev>")
+    value = os.getenv("EMAIL_FROM", "SideFX <onboarding@resend.dev>")
+
+    return value
 
 
 def _send_via_resend(to_email: str, subject: str, html: str) -> None:
-    try:
-        import resend
-    except ImportError as e:
-        raise RuntimeError("Resend SDK not installed. Run: pip install resend") from e
 
     api_key = os.getenv("RESEND_API_KEY")
     if not api_key:
@@ -33,6 +31,7 @@ def _send_via_resend(to_email: str, subject: str, html: str) -> None:
 
     resend.api_key = api_key
 
+    # print("EMAIL_FROM resolved as: ", _get_from_email())
     params: resend.Emails.SendParams = {
         "from": _get_from_email(),
         "to": [to_email],
@@ -41,7 +40,6 @@ def _send_via_resend(to_email: str, subject: str, html: str) -> None:
     }
 
     result = resend.Emails.send(params)
-    print(result)
     logger.info("Resend send result: %s", result)
 
 

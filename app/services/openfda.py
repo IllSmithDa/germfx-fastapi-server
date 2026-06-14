@@ -150,24 +150,48 @@ async def search_drug_names(query: str, limit: int = 25) -> List[Dict[str, Any]]
                             name = str(val).strip()
                             if name:
                                 candidates.append((name, typ))
+                        
                     manufacturer = (ofda.get("manufacturer_name") or [None])[0]
+                    upc_codes = ofda.get("upc", []) or []
+
+                    ndc_codes = []
+                    ndc_codes.extend(ofda.get("package_ndc", []) or [])
+                    ndc_codes.extend(ofda.get("product_ndc", []) or [])
+
                     # add to global dictionary (dedupe by normalized name)
                     for name, typ in candidates:
                         k = name.lower()
                         entry = names.get(k)
+
                         if not entry:
                             names[k] = {
                                 "name": name,
                                 "type": typ,
                                 "manufacturer": manufacturer,
+                                "upc_codes": upc_codes,
+                                "ndc_codes": ndc_codes,
                             }
                         else:
                             # prefer a more specific type order: brand > generic > substance
                             rank = {"brand": 3, "generic": 2, "substance": 1}
+
                             if rank.get(typ, 0) > rank.get(entry["type"], 0):
                                 entry["type"] = typ
+
                             if not entry.get("manufacturer") and manufacturer:
                                 entry["manufacturer"] = manufacturer
+
+                            entry["upc_codes"] = list(
+                                dict.fromkeys(
+                                    (entry.get("upc_codes") or []) + upc_codes
+                                )
+                            )
+
+                            entry["ndc_codes"] = list(
+                                dict.fromkeys(
+                                    (entry.get("ndc_codes") or []) + ndc_codes
+                                )
+                            )
     except Exception:
         pass
 
@@ -265,3 +289,113 @@ async def get_drug_info_by_code(code: str) -> Optional[Dict[str, Any]]:
         "query_used": code,
     }
     return payload
+
+#  Search OpenFDA label data by UPC/NDC code and return DrugIndex-ready items.
+async def search_drug_index_items_by_code(
+    code: str,
+    *,
+    limit: int = 25,
+) -> List[Dict[str, Any]]:
+    """
+    Search OpenFDA label data by UPC/NDC code and return DrugIndex-ready items.
+
+    This intentionally focuses only on:
+    - openfda.upc
+    - openfda.package_ndc
+    - openfda.product_ndc
+
+    It does not use UNII or RxCUI.
+    """
+    from app.util.normailize_codes import build_code_lookup_candidates
+
+    raw_code = (code or "").strip()
+
+    if not raw_code:
+        return []
+
+    lookup_candidates = build_code_lookup_candidates(raw_code)
+
+    search_fields = [
+        "openfda.upc",
+        "openfda.package_ndc",
+        "openfda.product_ndc",
+    ]
+
+    names: Dict[str, Dict[str, Any]] = {}
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for candidate_code in lookup_candidates:
+            for field in search_fields:
+                params = {
+                    "search": f'{field}:"{candidate_code}"',
+                    "limit": min(max(limit, 1), 100),
+                }
+
+                try:
+                    resp = await client.get(
+                        OPENFDA_BASE_URL,
+                        params=params,
+                    )
+                    resp.raise_for_status()
+                except httpx.HTTPError:
+                    continue
+
+                results = resp.json().get("results", []) or []
+
+                for doc in results:
+                    ofda = doc.get("openfda", {}) or {}
+
+                    manufacturer = (ofda.get("manufacturer_name") or [None])[0]
+
+                    upc_codes = ofda.get("upc", []) or []
+
+                    ndc_codes: List[str] = []
+                    ndc_codes.extend(ofda.get("package_ndc", []) or [])
+                    ndc_codes.extend(ofda.get("product_ndc", []) or [])
+
+                    candidates: List[Tuple[str, str]] = []
+
+                    for key, typ in [
+                        ("brand_name", "brand"),
+                        ("generic_name", "generic"),
+                        ("substance_name", "substance"),
+                    ]:
+                        for value in ofda.get(key, []) or []:
+                            name = str(value).strip()
+
+                            if name:
+                                candidates.append((name, typ))
+
+                    for name, typ in candidates:
+                        normalized_key = f"{name.strip().lower()}::{typ}"
+
+                        entry = names.get(normalized_key)
+
+                        if not entry:
+                            names[normalized_key] = {
+                                "name": name,
+                                "type": typ,
+                                "manufacturer": manufacturer,
+                                "upc_codes": list(dict.fromkeys(upc_codes)),
+                                "ndc_codes": list(dict.fromkeys(ndc_codes)),
+                                "source": "openfda",
+                            }
+
+                            continue
+
+                        if not entry.get("manufacturer") and manufacturer:
+                            entry["manufacturer"] = manufacturer
+
+                        entry["upc_codes"] = list(
+                            dict.fromkeys(
+                                (entry.get("upc_codes") or []) + upc_codes
+                            )
+                        )
+
+                        entry["ndc_codes"] = list(
+                            dict.fromkeys(
+                                (entry.get("ndc_codes") or []) + ndc_codes
+                            )
+                        )
+
+    return list(names.values())[:limit]
