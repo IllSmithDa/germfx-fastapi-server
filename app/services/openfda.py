@@ -1,6 +1,4 @@
 # openfda.py
-
-
 from app.util.normalize_drug_details import _normalize_dosage, _normalize_indications, _score_label, _text_list, _to_bullets
 import httpx
 from typing import Optional, Dict, Any, List, Tuple
@@ -290,6 +288,35 @@ async def get_drug_info_by_code(code: str) -> Optional[Dict[str, Any]]:
     }
     return payload
 
+def _drug_index_kind_priority(kind: str | None) -> int:
+    normalized = (kind or "").strip().lower()
+
+    if normalized == "brand":
+        return 0
+
+    if normalized == "generic":
+        return 1
+
+    if normalized == "substance":
+        return 2
+
+    return 3
+
+
+def _matched_field_priority(field: str | None) -> int:
+    normalized = (field or "").strip().lower()
+
+    if normalized == "openfda.upc":
+        return 0
+
+    if normalized == "openfda.package_ndc":
+        return 1
+
+    if normalized == "openfda.product_ndc":
+        return 2
+
+    return 3
+
 #  Search OpenFDA label data by UPC/NDC code and return DrugIndex-ready items.
 async def search_drug_index_items_by_code(
     code: str,
@@ -305,11 +332,17 @@ async def search_drug_index_items_by_code(
     - openfda.product_ndc
 
     It does not use UNII or RxCUI.
+
+    Important:
+    The scanned raw code and matched lookup candidate are also saved into the
+    returned code arrays so the newly upserted DrugIndex can be found by the
+    same scanner input on the next local lookup.
     """
     from app.util.normailize_codes import build_code_lookup_candidates
 
     raw_code = (code or "").strip()
 
+    print("raw code: ", raw_code)
     if not raw_code:
         return []
 
@@ -336,22 +369,109 @@ async def search_drug_index_items_by_code(
                         OPENFDA_BASE_URL,
                         params=params,
                     )
+
+                    print(
+                        "OpenFDA lookup:",
+                        {
+                            "field": field,
+                            "candidate_code": candidate_code,
+                            "status_code": resp.status_code,
+                            "url": str(resp.url),
+                        },
+                    )
+
+                    if resp.status_code == 404:
+                        print(
+                            "OpenFDA no results:",
+                            {
+                                "field": field,
+                                "candidate_code": candidate_code,
+                                "body": resp.text[:500],
+                            },
+                        )
+                        continue
+                    
                     resp.raise_for_status()
-                except httpx.HTTPError:
+
+                except httpx.HTTPStatusError as exc:
+                    print(
+                        "OpenFDA HTTP status error:",
+                        {
+                            "field": field,
+                            "candidate_code": candidate_code,
+                            "status_code": exc.response.status_code,
+                            "url": str(exc.request.url),
+                            "body": exc.response.text[:1000],
+                        },
+                    )
+                    continue
+                
+                except httpx.RequestError as exc:
+                    print(
+                        "OpenFDA request error:",
+                        {
+                            "field": field,
+                            "candidate_code": candidate_code,
+                            "url": str(exc.request.url) if exc.request else None,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        },
+                    )
+                    continue
+                
+                try:
+                    results = resp.json().get("results", []) or []
+                except ValueError as exc:
+                    print(
+                        "OpenFDA JSON parse error:",
+                        {
+                            "field": field,
+                            "candidate_code": candidate_code,
+                            "status_code": resp.status_code,
+                            "body": resp.text[:1000],
+                            "error": str(exc),
+                        },
+                    )
                     continue
 
                 results = resp.json().get("results", []) or []
+                
+                print("new results", results)
 
                 for doc in results:
                     ofda = doc.get("openfda", {}) or {}
 
                     manufacturer = (ofda.get("manufacturer_name") or [None])[0]
 
-                    upc_codes = ofda.get("upc", []) or []
+                    upc_codes: List[str] = []
+                    upc_codes.extend(ofda.get("upc", []) or [])
 
                     ndc_codes: List[str] = []
                     ndc_codes.extend(ofda.get("package_ndc", []) or [])
                     ndc_codes.extend(ofda.get("product_ndc", []) or [])
+
+                    # Preserve the scanner input that produced this match.
+                    # This prevents the "OpenFDA found it, but re-query returned []" problem.
+                    if field == "openfda.upc":
+                        upc_codes.extend([raw_code, candidate_code])
+                    else:
+                        ndc_codes.extend([raw_code, candidate_code])
+
+                    upc_codes = list(
+                        dict.fromkeys(
+                            str(value).strip()
+                            for value in upc_codes
+                            if str(value or "").strip()
+                        )
+                    )
+
+                    ndc_codes = list(
+                        dict.fromkeys(
+                            str(value).strip()
+                            for value in ndc_codes
+                            if str(value or "").strip()
+                        )
+                    )
 
                     candidates: List[Tuple[str, str]] = []
 
@@ -376,9 +496,12 @@ async def search_drug_index_items_by_code(
                                 "name": name,
                                 "type": typ,
                                 "manufacturer": manufacturer,
-                                "upc_codes": list(dict.fromkeys(upc_codes)),
-                                "ndc_codes": list(dict.fromkeys(ndc_codes)),
+                                "upc_codes": upc_codes,
+                                "ndc_codes": ndc_codes,
                                 "source": "openfda",
+                                "matched_code": candidate_code,
+                                "matched_field": field,
+                                "raw_code": raw_code,
                             }
 
                             continue
@@ -398,4 +521,14 @@ async def search_drug_index_items_by_code(
                             )
                         )
 
-    return list(names.values())[:limit]
+    items = list(names.values())
+
+    items.sort(
+        key=lambda item: (
+            _drug_index_kind_priority(item.get("type")),
+            _matched_field_priority(item.get("matched_field")),
+            str(item.get("name") or "").lower(),
+        )
+    )
+    
+    return items[:limit]

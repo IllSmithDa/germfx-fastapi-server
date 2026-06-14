@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-from sqlalchemy import or_
+from sqlalchemy import or_, case
 from sqlalchemy.orm import Session
 
 from app.models import DrugIndex
@@ -94,10 +94,18 @@ def _query_drug_indexes_by_code_candidates(
     if not filters:
         return []
 
+    kind_priority = case(
+        (DrugIndex.kind == "brand", 0),
+        (DrugIndex.kind == "generic", 1),
+        (DrugIndex.kind == "substance", 2),
+        else_=3,
+    )
+    
     return (
         db.query(DrugIndex)
         .filter(or_(*filters))
         .order_by(
+            kind_priority.asc(),
             DrugIndex.updated_at.desc().nullslast(),
             DrugIndex.id.desc(),
         )
@@ -133,7 +141,15 @@ async def resolve_drug_index_by_code(
         raise ValueError("Missing code")
 
     candidates = build_code_lookup_candidates(raw_code)
-
+    '''
+    print(
+    "OpenFDA code lookup candidates:",
+    {
+        "raw_code": raw_code,
+        "lookup_candidates": candidates,
+    },
+    )
+    '''
     local_rows = _query_drug_indexes_by_code_candidates(
         db,
         candidates,
@@ -157,6 +173,7 @@ async def resolve_drug_index_by_code(
 
     remote_count = 0
     resynced = False
+    remote_items: List[Dict[str, Any]] = []
 
     if should_resync:
         remote_items = await search_drug_index_items_by_code(
@@ -179,6 +196,41 @@ async def resolve_drug_index_by_code(
                 candidates,
                 limit=limit,
             )
+
+            # Safety fallback:
+            # If OpenFDA returned items and they were upserted, but the code-array
+            # re-query still misses, return the newly created/updated index rows
+            # by their normalized name/kind.
+            if not local_rows:
+                fallback_filters = []
+
+                for item in remote_items:
+                    name = str(item.get("name") or "").strip()
+                    kind = str(item.get("type") or "brand").strip().lower()
+
+                    if not name:
+                        continue
+
+                    fallback_filters.append(
+                        (
+                            DrugIndex.normalized_name == name.lower()
+                        )
+                        & (
+                            DrugIndex.kind == kind
+                        )
+                    )
+
+                if fallback_filters:
+                    local_rows = (
+                        db.query(DrugIndex)
+                        .filter(or_(*fallback_filters))
+                        .order_by(
+                            DrugIndex.updated_at.desc().nullslast(),
+                            DrugIndex.id.desc(),
+                        )
+                        .limit(limit)
+                        .all()
+                    )
 
     serialized_items = [
         _serialize_drug_index(

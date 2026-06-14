@@ -1,63 +1,141 @@
 import re
-from typing import List
+from typing import Any
 
-def normalize_scanned_code_input(value: str) -> str:
-    return re.sub(r"[^0-9-]", "", (value or "").strip())
 
-def generate_ndc10_candidates(raw: str) -> List[str]:
-    digits = re.sub(r"\D", "", raw)
+def strip_code(value: str) -> str:
+    return (
+        str(value or "")
+        .replace(" ", "")
+        .replace("\t", "")
+        .replace("\n", "")
+        .replace("(", "")
+        .replace(")", "")
+        .strip()
+    )
+
+
+def only_digits(value: str) -> str:
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+
+    for value in values:
+        clean = str(value or "").strip()
+
+        if not clean or clean in seen:
+            continue
+
+        seen.add(clean)
+        result.append(clean)
+
+    return result
+
+
+def get_ndc10_candidates(digits: str) -> list[str]:
     if len(digits) != 10:
         return []
 
     return [
-        f"{digits[:4]}-{digits[4:8]}-{digits[8:10]}",  # 4-4-2
-        f"{digits[:5]}-{digits[5:8]}-{digits[8:10]}",  # 5-3-2
-        f"{digits[:5]}-{digits[5:9]}-{digits[9:10]}",  # 5-4-1
+        # 4-4-2
+        f"{digits[0:4]}-{digits[4:8]}-{digits[8:10]}",
+
+        # 5-3-2
+        f"{digits[0:5]}-{digits[5:8]}-{digits[8:10]}",
+
+        # 5-4-1
+        f"{digits[0:5]}-{digits[5:9]}-{digits[9:10]}",
+
+        # Extra format based on your stored example:
+        # 5166052601 -> 51660-52-601
+        f"{digits[0:5]}-{digits[5:7]}-{digits[7:10]}",
     ]
 
-def ndc10_to_ndc11(ndc10: str) -> str | None:
-    parts = ndc10.split("-")
-    if len(parts) != 3:
-        return None
 
-    a, b, c = parts
+def get_ndc11_candidates(digits: str) -> list[str]:
+    if len(digits) != 11:
+        return []
 
-    if len(a) == 4 and len(b) == 4 and len(c) == 2:
-        return f"0{a}{b}{c}"      # 4-4-2 -> 5-4-2
-    if len(a) == 5 and len(b) == 3 and len(c) == 2:
-        return f"{a}0{b}{c}"      # 5-3-2 -> 5-4-2
-    if len(a) == 5 and len(b) == 4 and len(c) == 1:
-        return f"{a}{b}0{c}"      # 5-4-1 -> 5-4-2
+    return [
+        # 5-4-2
+        f"{digits[0:5]}-{digits[5:9]}-{digits[9:11]}",
 
-    return None
+        # fallback groupings
+        f"{digits[0:5]}-{digits[5:8]}-{digits[8:11]}",
+        f"{digits[0:4]}-{digits[4:8]}-{digits[8:11]}",
+    ]
 
-def build_code_lookup_candidates(raw_code: str) -> List[str]:
-    raw = normalize_scanned_code_input(raw_code)
 
-    candidates: List[str] = []
-    seen = set()
+def get_upc_candidates(digits: str) -> list[str]:
+    candidates: list[str] = []
 
-    def add(value: str | None):
-        if value and value not in seen:
-            seen.add(value)
-            candidates.append(value)
+    if len(digits) == 12:
+        candidates.append(digits)
 
-    add(raw)
+        if digits.startswith("0"):
+            candidates.append(digits[1:])
 
-    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 13:
+        candidates.append(digits)
 
-    # plain digits
-    add(digits)
-
-    # already-hyphenated NDC
-    if raw.count("-") == 2:
-        add(raw)
-        add(ndc10_to_ndc11(raw))
-
-    # 10-digit NDC typed without hyphens
-    if len(digits) == 10:
-        for ndc10 in generate_ndc10_candidates(digits):
-            add(ndc10)
-            add(ndc10_to_ndc11(ndc10))
+        if digits.startswith("0"):
+            candidates.append(digits[1:])
 
     return candidates
+
+
+def get_inner_upc_medication_candidates(digits: str) -> list[str]:
+    candidates: list[str] = []
+
+    # UPC-A style:
+    # 3 51660 52601 1
+    # full scanned: 351660526011
+    # inner 10:     5166052601
+    if len(digits) == 12:
+        inner10 = digits[1:11]
+
+        candidates.append(inner10)
+        candidates.extend(get_ndc10_candidates(inner10))
+
+    # EAN-13 style:
+    # Try removing first and last digit to get inner 11.
+    # Try removing first 2 and last 1 to get inner 10.
+    if len(digits) == 13:
+        without_first = digits[1:]
+        inner11 = digits[1:12]
+        inner10 = digits[2:12]
+
+        candidates.append(without_first)
+
+        candidates.append(inner11)
+        candidates.extend(get_ndc11_candidates(inner11))
+
+        candidates.append(inner10)
+        candidates.extend(get_ndc10_candidates(inner10))
+
+    return candidates
+
+
+def build_code_lookup_candidates(value: Any) -> list[str]:
+    stripped = strip_code(str(value or ""))
+    digits = only_digits(stripped)
+
+    candidates = [
+        stripped,
+        digits,
+
+        # UPC/EAN candidates as scanned.
+        *get_upc_candidates(digits),
+
+        # Medication-specific extraction from UPC/EAN.
+        *get_inner_upc_medication_candidates(digits),
+
+        # Direct NDC-style candidates.
+        *get_ndc10_candidates(digits),
+        *get_ndc11_candidates(digits),
+    ]
+
+    
+    return unique(candidates)
