@@ -48,7 +48,7 @@ class User(Base):
     deactivated_at = Column(DateTime(timezone=True), nullable=True)
     suspended_at = Column(DateTime(timezone=True), nullable=True)
     suspension_reason = Column(Text, nullable=True)
-
+    role = Column(String(20), nullable=False, server_default="user", index=True)
     settings = relationship(
         "UserSettings",
         back_populates="user",

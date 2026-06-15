@@ -77,7 +77,7 @@ def verify_user(identifier: str, password: str, db: Session) -> models.User:
             },
         )
 
-    print("verify_user: authenticated user:", user.username)
+    # print("verify_user: authenticated user:", user.username)
     return user
 
 def _extract_bearer_token(authorization: str | None) -> str | None:
@@ -143,7 +143,7 @@ def get_authenticated_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token revoked",
         )
-
+    # print("found user role: ", user.role)
     return user
 
 def get_optional_user(

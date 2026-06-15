@@ -259,6 +259,7 @@ def me(current_user: models.User = Depends(get_authenticated_user)):
     except Exception:
         email = None
 
+    # print("returning user role: ", current_user.role)
     return {
         "id": current_user.id,
         "username": current_user.username,
@@ -267,6 +268,7 @@ def me(current_user: models.User = Depends(get_authenticated_user)):
         "is_email_verified": current_user.is_email_verified,
         "account_status": getattr(current_user, "account_status", None),
         "created_at": current_user.created_at,
+        "role": current_user.role
     }
 
 @router.get("/", response_model=List[UserOut])
