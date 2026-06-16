@@ -9,3 +9,9 @@ class AdminSuspendAccountRequest(BaseModel):
 
 class AdminReactivateAccountRequest(BaseModel):
     user_id: int
+
+class DrugIndexCodeUpdateRequest(BaseModel):
+    add_upc_codes: list[str] = Field(default_factory=list)
+    add_ndc_codes: list[str] = Field(default_factory=list)
+    remove_upc_codes: list[str] = Field(default_factory=list)
+    remove_ndc_codes: list[str] = Field(default_factory=list)

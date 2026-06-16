@@ -24,10 +24,22 @@ async def adverse_search(drug: str):
 @router.get("/drug-list-search")
 async def search_medications(
     q: str = Query(..., min_length=1, max_length=80),
-    limit: int = 25,
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    page: Optional[int] = Query(None, ge=1),
     db: Session = Depends(get_db),
 ):
-    return await search_drugs_db_first(db, q, limit=limit)
+    resolved_offset = offset
+
+    if page is not None:
+        resolved_offset = (page - 1) * limit
+
+    return await search_drugs_db_first(
+        db,
+        q,
+        limit=limit,
+        offset=resolved_offset,
+    )
 
 
 # --- NEW: base detail endpoint (no llama, just raw OpenFDA + persistence) ---

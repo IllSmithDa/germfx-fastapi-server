@@ -69,6 +69,31 @@ def _clean_code_list(values: Any) -> list[str]:
 
     return out
 
+def _normalize_pagination(
+    limit: int,
+    offset: int,
+) -> tuple[int, int]:
+    safe_limit = max(1, min(int(limit or 25), 100))
+    safe_offset = max(0, int(offset or 0))
+
+    return safe_limit, safe_offset
+
+
+def _slice_page(
+    items: List[Dict[str, Any]],
+    *,
+    limit: int,
+    offset: int,
+) -> Dict[str, Any]:
+    paged_items = items[offset: offset + limit]
+
+    return {
+        "items": paged_items,
+        "limit": limit,
+        "offset": offset,
+        "has_more": len(items) > offset + limit,
+    }
+
 def _merge_unique_codes(
     existing: list[str] | None,
     incoming: list[str] | None,
@@ -252,25 +277,57 @@ def _trgm_stmt(query: str, normalized_query: str, limit: int):
     )
 
 
-def search_local(db: Session, q: str, limit: int = 25) -> Dict[str, Any]:
+def search_local(
+    db: Session,
+    q: str,
+    limit: int = 25,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    limit, offset = _normalize_pagination(
+        limit,
+        offset,
+    )
+
     query = q.strip()
+
     if not query:
         return {
             "items": [],
             "used_fuzzy": False,
             "did_you_mean": None,
+            "limit": limit,
+            "offset": offset,
+            "has_more": False,
         }
 
     normalized_query = _norm(query)
 
-    strict_rows = db.execute(
-        _fallback_stmt(query, normalized_query, limit)
-    ).all()
-    strict_results = _rows_to_results(strict_rows)
+    # Fetch enough rows to support offset pagination and detect has_more.
+    fetch_limit = offset + limit + 1
 
-    if len(strict_results) >= min(5, limit):
+    strict_rows = db.execute(
+        _fallback_stmt(
+            query,
+            normalized_query,
+            fetch_limit,
+        )
+    ).all()
+
+    strict_results_all = _rows_to_results(
+        strict_rows
+    )
+
+    # Preserve your old behavior:
+    # if strict search gives enough useful results, do not invoke fuzzy search.
+    if len(strict_results_all) >= min(5, fetch_limit):
+        paged = _slice_page(
+            strict_results_all,
+            limit=limit,
+            offset=offset,
+        )
+
         return {
-            "items": strict_results,
+            **paged,
             "used_fuzzy": False,
             "did_you_mean": None,
         }
@@ -286,28 +343,65 @@ def search_local(db: Session, q: str, limit: int = 25) -> Dict[str, Any]:
         has_trgm = False
 
     if not has_trgm:
+        paged = _slice_page(
+            strict_results_all,
+            limit=limit,
+            offset=offset,
+        )
+
         return {
-            "items": strict_results,
+            **paged,
             "used_fuzzy": False,
             "did_you_mean": None,
         }
 
     try:
         fuzzy_rows = db.execute(
-            _trgm_stmt(query, normalized_query, limit)
+            _trgm_stmt(
+                query,
+                normalized_query,
+                fetch_limit,
+            )
         ).all()
-        fuzzy_results = _rows_to_results(fuzzy_rows)
 
-        merged = _merge_unique_results(strict_results, fuzzy_results, limit)
+        fuzzy_results_all = _rows_to_results(
+            fuzzy_rows
+        )
+
+        merged_all = _merge_unique_results(
+            strict_results_all,
+            fuzzy_results_all,
+            fetch_limit,
+        )
+
+        paged = _slice_page(
+            merged_all,
+            limit=limit,
+            offset=offset,
+        )
 
         return {
-            "items": merged,
-            "used_fuzzy": len(fuzzy_results) > 0 and len(strict_results) < min(5, limit),
-            "did_you_mean": _best_suggestion(strict_results, fuzzy_results, query),
+            **paged,
+            "used_fuzzy": (
+                len(fuzzy_results_all) > 0
+                and len(strict_results_all) < min(5, fetch_limit)
+            ),
+            "did_you_mean": _best_suggestion(
+                strict_results_all,
+                fuzzy_results_all,
+                query,
+            ),
         }
+
     except ProgrammingError:
+        paged = _slice_page(
+            strict_results_all,
+            limit=limit,
+            offset=offset,
+        )
+
         return {
-            "items": strict_results,
+            **paged,
             "used_fuzzy": False,
             "did_you_mean": None,
         }
@@ -317,13 +411,46 @@ async def search_drugs_db_first(
     db: Session,
     q: str,
     limit: int = 25,
+    offset: int = 0,
 ) -> Dict[str, Any]:
-    local = search_local(db, q, limit)
+    limit, offset = _normalize_pagination(
+        limit,
+        offset,
+    )
+
+    local = search_local(
+        db,
+        q,
+        limit=limit,
+        offset=offset,
+    )
+
+    # Preserve your old behavior:
+    # if local search is already strong enough, avoid OpenFDA.
     if len(local["items"]) >= min(5, limit):
         return local
 
-    remote = await search_drug_names(q, limit=100)
-    if remote:
-        upsert_drug_index(db, remote)
+    # Pull enough remote suggestions to make later pages useful.
+    # OpenFDA itself is still just used to seed/update DrugIndex.
+    remote_limit = max(
+        100,
+        offset + limit + 1,
+    )
 
-    return search_local(db, q, limit)
+    remote = await search_drug_names(
+        q,
+        limit=min(remote_limit, 100),
+    )
+
+    if remote:
+        upsert_drug_index(
+            db,
+            remote,
+        )
+
+    return search_local(
+        db,
+        q,
+        limit=limit,
+        offset=offset,
+    )

@@ -102,9 +102,10 @@ def get_authenticated_user(
     - Web auth via HttpOnly access_token cookie
     - Mobile auth via Authorization: Bearer <access_token>
     """
+    
     bearer_token = _extract_bearer_token(authorization)
     token = bearer_token or access_token
-
+    # print("token: ", token)
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
