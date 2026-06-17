@@ -55,6 +55,12 @@ class User(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    subscription = relationship(
+        "UserSubscription",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 #   
 # Optional normalized catalog of symptom terms (e.g., “nausea”, “headache”)
 class Symptom(Base):
@@ -456,13 +462,25 @@ class UserSubscription(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         unique=True,
+        index=True,
     )
 
-    stripe_customer_id = Column(String, nullable=True)
-    stripe_subscription_id = Column(String, nullable=True)
+    plan = Column(String(30), nullable=False, server_default="free")
+    status = Column(String(30), nullable=False, server_default="free")
 
-    status = Column(String, nullable=False, default="free")
+    provider = Column(String(30), nullable=False, server_default="manual")
+    stripe_customer_id = Column(String(255), nullable=True, index=True)
+    stripe_subscription_id = Column(String(255), nullable=True, unique=True, index=True)
 
-    current_period_end = Column(DateTime, nullable=True)
+    current_period_start = Column(DateTime(timezone=True), nullable=True)
+    current_period_end = Column(DateTime(timezone=True), nullable=True)
 
-    cancel_at_period_end = Column(Boolean, default=False)
+    cancel_at_period_end = Column(Boolean, nullable=False, server_default="false")
+
+    granted_by_admin = Column(Boolean, nullable=False, server_default="false")
+    notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="subscription")
