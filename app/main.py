@@ -3,14 +3,16 @@ from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import Base, engine
-from app.routes import account_danger, account_recovery, admin_activities, admin_drug_indexes, admin_users, articles, auth, drug_detail_export, google_auth, reactions, drug_detail, email, safety_warnings, saved_items, side_effects, suggestions, user_medications, user_detail, reports, reports_export, recalls, user_settings, symptom_logs, rxnorm_test, dailymed_test, brave_search_test
+from app.routes import account_danger, account_recovery, admin_activities, admin_drug_indexes, admin_users, articles, auth, billing, drug_detail_export, google_auth, reactions, drug_detail, email, safety_warnings, saved_items, side_effects, suggestions, user_medications, user_detail, reports, reports_export, recalls, user_settings, symptom_logs, rxnorm_test, dailymed_test, brave_search_test
 
 app = FastAPI(title="SideFX FastAPI Backend")
 
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
+    "https://localhost:3000",
+    
     "http://127.0.0.1:3000",
-
+    "https://127.0.0.1:3000",
     "http://localhost:8081",
     "http://127.0.0.1:8081",
     "http://192.168.1.25:8081",
@@ -64,7 +66,11 @@ api.include_router(brave_search_test.router, prefix="/brave-search", tags=["brav
 api.include_router(admin_users.router, prefix="/admin", tags=["admin-users"])
 api.include_router(admin_drug_indexes.router, prefix="/admin", tags=["admin-drug-indexes"],
 )
-
+api.include_router(
+    billing.router,
+    prefix="/billing",
+    tags=["billing"],
+)
 # Mount the API group
 app.include_router(api)
 
