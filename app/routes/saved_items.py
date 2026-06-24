@@ -50,7 +50,7 @@ def list_saved_items(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
     content_type: Optional[str] = Query(None),
-    query: Optional[str] = Query(None),
+    query: Optional[str] = Query(..., min_length=1, max_length=100),
     sort: str = Query(
         "newest",
         description="newest | oldest | title_asc | title_desc",

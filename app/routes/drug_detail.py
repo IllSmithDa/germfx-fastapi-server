@@ -23,7 +23,8 @@ async def adverse_search(drug: str):
 
 @router.get("/drug-list-search")
 async def search_medications(
-    q: str = Query(..., min_length=1, max_length=80),
+    q: str = Query(..., min_length=1, max_length=100),
+    
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
     page: Optional[int] = Query(None, ge=1),
@@ -133,7 +134,7 @@ async def drug_index_by_code(
     code: str = Query(
         ...,
         min_length=4,
-        max_length=80,
+        max_length=25,
         description="UPC, package NDC, or product NDC",
     ),
     limit: int = Query(25, ge=1, le=100),
