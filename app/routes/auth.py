@@ -1,6 +1,8 @@
 # routes/auth.py
 
+from app.services.request_cooldowns import enforce_and_mark_user_cooldown
 from app.services.subscriptions import serialize_user_subscription
+from app.services.turnstile import verify_turnstile_token
 from app.util.security import (
   hash_password,
   verify_password,
@@ -9,7 +11,7 @@ from app.util.security import (
   encrypt_email,
   decrypt_email
 )
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Request, BackgroundTasks, Header
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Request, BackgroundTasks, Header, Body 
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from typing import List
@@ -45,22 +47,36 @@ COOKIE_PATH = "/"  # must match what you used when setting cookies
 # REFRESH_PATH = "/auth"  # path where refresh cookie is valid
 
 from app.util.security import decrypt_email, canonicalize_email
-from app.email_secure import generate_email_token
-from app.emailer import send_email, verification_email_html
+from app.email_secure import generate_email_change_token, generate_email_token, verify_email_change_token
+from app.emailer import change_email_verification_html, send_email, verification_email_html
 import os
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+CLIENT_BASE_URL = os.getenv("CLIENT_BASE_URL", "http://localhost:3000")
+
+
+def _email_change_verification_link(token: str) -> str:
+    return f"{CLIENT_BASE_URL}/verify-email-change?token={token}"
 
 def _verification_link(token: str) -> str:
     return f"{API_BASE_URL}/api/auth/verify?token={token}"
 
+def _email_change_verification_link(token: str) -> str:
+    return f"{CLIENT_BASE_URL}/verify-email-change?token={token}"
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def create_user(
     payload: UserCreate,
+    request: Request,
     background: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
+    verify_turnstile_token(
+        token=payload.turnstile_token,
+        request=request,
+        action="register",
+    )
+
     created_user = create_user_in_db(payload, db)
 
     try:
@@ -76,18 +92,24 @@ def create_user(
             html,
         )
     except Exception:
-        # You can log this instead of failing registration
         pass
 
     return created_user
 
 
 @router.post("/login")
-def login_user(payload: UserLogin, response: Response, db: Session = Depends(get_db)):
+def login_user(payload: UserLogin, request: Request, response: Response, db: Session = Depends(get_db)):
     """
     Authenticate a user by identifier (email or username) + password,
     issue JWTs, and set HttpOnly cookies.
     """
+
+    verify_turnstile_token(
+        token=payload.turnstile_token,
+        request=request,
+        action="login",
+    )
+
     # verify_user already handles email OR username
     user = verify_user(payload.identifier, payload.password, db)
 
@@ -340,6 +362,15 @@ def change_password(
             detail=password_error,
         )
 
+    enforce_and_mark_user_cooldown(
+        db=db,
+        user_id=current_user.id,
+        action_key="change_password",
+        cooldown_seconds=300,
+        message="Please wait before changing your password again.",
+        commit=False,
+    )
+    
     # Update password hash
     current_user.password_hash = hash_password(payload.new_password)
 
@@ -389,6 +420,15 @@ def change_username(
             status_code=status.HTTP_409_CONFLICT,
             detail="Username already taken",
         )
+    
+    enforce_and_mark_user_cooldown(
+        db=db,
+        user_id=current_user.id,
+        action_key="change_username",
+        cooldown_seconds=300,
+        message="Please wait before changing your username again.",
+        commit=False,
+    )
 
     current_user.username = new_username
     db.add(current_user)
@@ -398,9 +438,9 @@ def change_username(
     return current_user
 
 @router.post("/change-email", status_code=status.HTTP_200_OK)
-def change_email(
+def request_email_change(
     payload: ChangeEmailRequest,
-    response: Response,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_authenticated_user),
 ):
@@ -436,7 +476,7 @@ def change_email(
             detail="New email must be different from your current email",
         )
 
-    # Check uniqueness by deterministic hash
+    # Check uniqueness before sending verification
     new_email_hash = hash_email(new_email)
 
     existing_user = db.execute(
@@ -449,19 +489,109 @@ def change_email(
             detail="Email already in use",
         )
 
-    # Update encrypted + hashed email
-    current_user.email_hash = new_email_hash
-    current_user.email_enc = encrypt_email(new_email)
+    enforce_and_mark_user_cooldown(
+        db=db,
+        user_id=current_user.id,
+        action_key="change_email",
+        cooldown_seconds=300,
+        message="Please wait before requesting another email change.",
+        commit=True,
+    )
+    
+    token = generate_email_change_token(
+        user_id=current_user.id,
+        current_email_hash=current_user.email_hash,
+        new_email=new_email,
+    )
 
-    # Invalidate existing sessions
-    current_user.token_version += 1
+    link = _email_change_verification_link(token)
+    html = change_email_verification_html(link, new_email)
 
-    db.add(current_user)
+    background.add_task(
+        send_email,
+        new_email,
+        "Confirm your SideFX email change",
+        html,
+    )
+
+    return {
+        "message": "Verification email sent. Please check your new email address to complete the change.",
+    }
+
+@router.post("/verify-email-change", status_code=status.HTTP_200_OK)
+def verify_email_change(
+    payload: dict = Body(...),
+    response: Response = None,
+    db: Session = Depends(get_db),
+):
+    token = str(payload.get("token") or "").strip()
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing email change verification token.",
+        )
+
+    try:
+        token_payload = verify_email_change_token(token)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
+    user_id = token_payload["uid"]
+    token_current_email_hash = token_payload["current_email_hash"]
+    new_email = canonicalize_email(token_payload["new_email"])
+
+    user = db.execute(
+        select(models.User).where(models.User.id == int(user_id))
+    ).scalars().first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if user.email_hash != token_current_email_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This email change link is no longer valid.",
+        )
+
+    email_error = validate_new_email(new_email)
+    if email_error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=email_error,
+        )
+
+    new_email_hash = hash_email(new_email)
+
+    existing_user = db.execute(
+        select(models.User).where(models.User.email_hash == new_email_hash)
+    ).scalars().first()
+
+    if existing_user and existing_user.id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already in use",
+        )
+
+    user.email_hash = new_email_hash
+    user.email_enc = encrypt_email(new_email)
+    user.is_email_verified = True
+    user.token_version += 1
+
+    db.add(user)
     db.commit()
-    db.refresh(current_user)
+    db.refresh(user)
 
-    # Force fresh login
-    response.delete_cookie(key=ACCESS_COOKIE, path=COOKIE_PATH)
-    response.delete_cookie(key=REFRESH_COOKIE, path=COOKIE_PATH)
+    if response:
+        response.delete_cookie(key=ACCESS_COOKIE, path=COOKIE_PATH)
+        response.delete_cookie(key=REFRESH_COOKIE, path=COOKIE_PATH)
 
-    return {"message": "Email changed successfully. Please log in again."}
+    return {
+        "message": "Email changed successfully. Please log in again with your new email.",
+    }

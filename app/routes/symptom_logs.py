@@ -2,6 +2,7 @@
 from typing import Optional, List
 from datetime import date
 from app.models import User
+from app.services.usage_limits import enforce_free_usage_limit
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Body
 from sqlalchemy import select, func, or_
 from sqlalchemy.orm import Session, selectinload
@@ -22,6 +23,21 @@ def create_symptom_log(
     user = db.get(User, current_user.id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    current_symptom_log_count = (
+        db.query(SymptomLog)
+        .filter(SymptomLog.user_id == current_user.id)
+        .count()
+    )
+
+    enforce_free_usage_limit(
+        db=db,
+        user=user,
+        feature_key="symptom_logs",
+        current_count=current_symptom_log_count,
+        requested_count=1,
+        label="symptom logs",
+    )
 
     if payload.user_medication_id is not None and not db.get(UserMedication, payload.user_medication_id):
         raise HTTPException(status_code=404, detail="User Medication not found")
@@ -165,6 +181,21 @@ def create_symptom_logs_bulk(
     user = db.get(User, current_user.id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+           
+    current_symptom_log_count = (
+        db.query(SymptomLog)
+        .filter(SymptomLog.user_id == current_user.id)
+        .count()
+    )
+
+    enforce_free_usage_limit(
+        db=db,
+        user=user,
+        feature_key="symptom_logs",
+        current_count=current_symptom_log_count,
+        requested_count=len(payloads),
+        label="symptom logs",
+    )
 
     # Optional: validate referenced IDs in batch (faster than per-row db.get)
     med_ids = {p.user_medication_id for p in payloads if p.user_medication_id is not None}

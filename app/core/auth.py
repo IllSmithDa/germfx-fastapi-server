@@ -105,7 +105,7 @@ def get_authenticated_user(
     
     bearer_token = _extract_bearer_token(authorization)
     token = bearer_token or access_token
-    print("token: ", token)
+    # print("token: ", token)
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

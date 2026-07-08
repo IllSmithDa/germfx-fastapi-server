@@ -7,7 +7,7 @@ class UserCreate(BaseModel):
     username: str = Field(min_length=4, max_length=20)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
-
+    turnstile_token: str | None = Field(default=None, max_length=2048)
 
 class UserOut(BaseModel):
     id: int
@@ -31,6 +31,7 @@ class UserDetailOut(BaseModel):
 class UserLogin(BaseModel):
     identifier: str
     password: str
+    turnstile_token: str | None = Field(default=None, max_length=2048)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -70,7 +71,7 @@ class ChangeEmailRequest(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
-
+    turnstile_token: str | None = Field(default=None, max_length=2048)
 
 class ResetPasswordRequest(BaseModel):
     token: str = Field(min_length=1)

@@ -14,8 +14,9 @@ from app.services.saved_items import (
     delete_saved_item_for_user,
     check_saved_item_for_user,
 )
+from app.services.usage_limits import enforce_free_usage_limit
 from app.core.auth import get_authenticated_user
-from app.models import User
+from app.models import User, UserSavedItem
 
 router = APIRouter(tags=["saved-items"])
 
@@ -27,17 +28,66 @@ def create_saved_item(
     current_user: User = Depends(get_authenticated_user),
 ):
     try:
+        user = db.get(User, current_user.id)
+
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found",
+            )
+
+        # Check duplicate first.
+        # If the item is already saved, this should not count as a new save
+        # and should not be blocked by the saved-items limit.
+        existing_saved_item = (
+            db.query(UserSavedItem)
+            .filter(
+                UserSavedItem.user_id == current_user.id,
+                UserSavedItem.content_type == payload.content_type,
+                UserSavedItem.source_item_id == payload.source_item_id,
+            )
+            .first()
+        )
+
+        if existing_saved_item:
+            return save_item_for_user(
+                db,
+                user_id=current_user.id,
+                content_type=payload.content_type,
+                source_item_id=payload.source_item_id,
+            )
+
+        current_saved_count = (
+            db.query(UserSavedItem)
+            .filter(UserSavedItem.user_id == current_user.id)
+            .count()
+        )
+
+        enforce_free_usage_limit(
+            db=db,
+            user=user,
+            feature_key="saved_items",
+            current_count=current_saved_count,
+            requested_count=1,
+            label="saved items",
+        )
+
         return save_item_for_user(
             db,
             user_id=current_user.id,
             content_type=payload.content_type,
             source_item_id=payload.source_item_id,
         )
+
+    except HTTPException:
+        raise
+
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -50,7 +100,7 @@ def list_saved_items(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
     content_type: Optional[str] = Query(None),
-    query: Optional[str] = Query(..., min_length=1, max_length=100),
+    query: Optional[str] = Query(None, min_length=1, max_length=100),
     sort: str = Query(
         "newest",
         description="newest | oldest | title_asc | title_desc",
@@ -64,6 +114,7 @@ def list_saved_items(
             if sort in {"newest", "oldest", "title_asc", "title_desc"}
             else "newest"
         )
+
         return list_saved_items_for_user(
             db,
             user_id=current_user.id,
@@ -73,11 +124,13 @@ def list_saved_items(
             limit=limit,
             skip=skip,
         )
+
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to load saved items: {exc}",
         ) from exc
+
 
 @router.get("/check")
 def check_saved_item(
@@ -93,6 +146,7 @@ def check_saved_item(
             content_type=content_type,
             source_item_id=source_item_id,
         )
+
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -120,14 +174,17 @@ def remove_saved_item(
             )
 
         return {"deleted": True, "saved_item_id": saved_item_id}
+
     except HTTPException:
         raise
+
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete saved item: {exc}",
         ) from exc
-    
+
+
 @router.get("/check/bulk")
 def check_bulk_saved_items(
     db: Session = Depends(get_db),

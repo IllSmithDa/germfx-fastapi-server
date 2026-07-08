@@ -243,3 +243,130 @@ def password_reset_email_html(link: str) -> str:
       </body>
     </html>
     """
+
+def change_email_verification_html(link: str, new_email: str) -> str:
+    return f"""
+    <html>
+      <body
+        style="
+          margin:0;
+          padding:32px 16px;
+          background:#f8fafc;
+          font-family:Arial,sans-serif;
+          color:#111827;
+        "
+      >
+        <table
+          width="100%"
+          cellpadding="0"
+          cellspacing="0"
+          style="max-width:600px;margin:0 auto;"
+        >
+          <tr>
+            <td>
+              <div
+                style="
+                  background:#ffffff;
+                  border:1px solid #e5e7eb;
+                  border-radius:20px;
+                  padding:40px 32px;
+                  box-shadow:0 1px 3px rgba(0,0,0,0.05);
+                "
+              >
+                <div style="text-align:center;">
+                  <div
+                    style="
+                      display:inline-block;
+                      padding:6px 12px;
+                      border-radius:999px;
+                      background:#eff6ff;
+                      color:#2563eb;
+                      font-size:12px;
+                      font-weight:700;
+                      letter-spacing:0.08em;
+                      text-transform:uppercase;
+                    "
+                  >
+                    SideFX Account Security
+                  </div>
+
+                  <h1
+                    style="
+                      margin:20px 0 12px;
+                      font-size:30px;
+                      line-height:1.2;
+                      color:#0f172a;
+                    "
+                  >
+                    Verify your new email
+                  </h1>
+
+                  <p
+                    style="
+                      margin:0 auto;
+                      max-width:460px;
+                      font-size:16px;
+                      line-height:1.7;
+                      color:#475569;
+                    "
+                  >
+                    Click the button below to confirm that you want to use
+                    <strong>{new_email}</strong> as your SideFX account email.
+                  </p>
+                </div>
+
+                <div style="margin-top:36px;text-align:center;">
+                  <a
+                    href="{link}"
+                    style="
+                      display:inline-block;
+                      padding:14px 24px;
+                      background:#111827;
+                      color:#ffffff;
+                      text-decoration:none;
+                      border-radius:12px;
+                      font-size:15px;
+                      font-weight:600;
+                    "
+                  >
+                    Confirm Email Change
+                  </a>
+                </div>
+
+                <div
+                  style="
+                    margin-top:32px;
+                    padding-top:24px;
+                    border-top:1px solid #e5e7eb;
+                  "
+                >
+                  <p
+                    style="
+                      margin:0;
+                      font-size:14px;
+                      line-height:1.7;
+                      color:#64748b;
+                    "
+                  >
+                    If you did not request this change, you can safely ignore
+                    this email. Your account email will not change unless this
+                    link is used.
+                  </p>
+
+                  <p
+                    style="
+                      margin-top:16px;
+                      font-size:13px;
+                      color:#94a3b8;
+                    "
+                  >
+                    © SideFX
+                  </p>
+                </div>
+              </div>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html>
+    """

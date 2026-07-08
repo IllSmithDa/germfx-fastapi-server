@@ -1,6 +1,7 @@
 # app/routers/user_medications.py
 import traceback
 from app.core.auth import get_authenticated_user
+from app.services.usage_limits import enforce_free_usage_limit
 from sqlalchemy.exc import IntegrityError
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, selectinload
@@ -99,11 +100,25 @@ def create_user_medication(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_authenticated_user),
 ):
-    print(current_user.id)
     # ensure user exists
     user = db.get(models.User, current_user.id)
     if not user:
         raise HTTPException(status_code=422, detail="User not found")
+
+    current_medication_count = (
+        db.query(models.UserMedication)
+        .filter(models.UserMedication.user_id == current_user.id)
+        .count()
+    )
+
+    enforce_free_usage_limit(
+        db=db,
+        user=user,
+        feature_key="user_medications",
+        current_count=current_medication_count,
+        requested_count=1,
+        label="medications",
+    )
 
     # ensure medication exists
     med_index = db.get(models.DrugIndex, payload.drug_index_id)

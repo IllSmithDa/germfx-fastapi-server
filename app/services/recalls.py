@@ -38,11 +38,12 @@ def _fetch_openfda_json(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]
     url = f"{OPENFDA_BASE}{endpoint}"
     response = requests.get(url, params=params, timeout=DEFAULT_TIMEOUT)
 
+    '''
     print(
         f"Received response with status {response.status_code} and content length {len(response.content)}"
     )
     print("Final URL:", response.url)
-
+    '''
     if response.status_code == 404:
         print(f"No OpenFDA matches found for {endpoint} with params {params}")
         return {"results": [], "meta": {}}

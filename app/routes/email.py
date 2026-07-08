@@ -1,8 +1,10 @@
 # app/routes/email.py
 from datetime import datetime, timedelta, timezone
 import os
+from app.services.email_request_cooldowns import enforce_email_request_cooldown, get_email_request_cooldown_status, mark_email_request_cooldown
+from app.services.turnstile import verify_turnstile_token
 from fastapi.responses import RedirectResponse
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Query
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import select, update
 
@@ -79,6 +81,16 @@ def send_verification_email(
     token = generate_email_token(user.id, decrypted_email)
     link = _verification_link(token)
 
+    email_hash = hash_email(decrypted_email)
+
+    enforce_email_request_cooldown(
+        db=db,
+        action_key="send_verification",
+        email_hash=email_hash,
+        cooldown_seconds=RESEND_MIN_INTERVAL,
+        message="Please wait before requesting another verification email.",
+    )
+
     db.execute(
         update(models.User)
         .where(models.User.id == user.id)
@@ -150,45 +162,58 @@ def verify_email(token: str = Query(...), db: Session = Depends(get_db)):
 @router.post("/forgot-password", status_code=status.HTTP_200_OK)
 def forgot_password(
     payload: ForgotPasswordRequest,
+    request: Request,
     background: BackgroundTasks,
     db: Session = Depends(get_db),
-):  
-    print("trigger 1")
-    email = canonicalize_email(payload.email)
-    email_hash = hash_email(email)
-
-    user = db.execute(
-        select(models.User).where(models.User.email_hash == email_hash)
-    ).scalars().first()
+):
+    verify_turnstile_token(
+        token=payload.turnstile_token,
+        request=request,
+        action="forgot_password",
+    )
 
     generic_response = {
         "detail": "If an account exists for that email, a reset link has been sent."
     }
 
-    if not user:
+    email = canonicalize_email(payload.email)
+    email_hash = hash_email(email)
+
+    cooldown_status = get_email_request_cooldown_status(
+        db=db,
+        action_key="forgot_password",
+        email_hash=email_hash,
+        cooldown_seconds=RESEND_MIN_INTERVAL,
+    )
+
+    if not cooldown_status["allowed"]:
         return generic_response
 
-    if getattr(user, "password_reset_sent_at", None):
-        delta = datetime.now(timezone.utc) - user.password_reset_sent_at
-        if delta < timedelta(seconds=RESEND_MIN_INTERVAL):
-            return generic_response
+    mark_email_request_cooldown(
+        db=db,
+        action_key="forgot_password",
+        email_hash=email_hash,
+        commit=False,
+    )
+
+    user = db.execute(
+        select(models.User).where(models.User.email_hash == email_hash)
+    ).scalars().first()
+
+    if not user:
+        db.commit()
+        return generic_response
 
     try:
         decrypted_email = canonicalize_email(decrypt_email(user.email_enc))
     except Exception:
+        db.commit()
         return generic_response
 
     token = generate_password_reset_token(user.id, decrypted_email)
     link = _password_reset_link(token)
 
-    # Optional throttle tracking
-    if hasattr(user, "password_reset_sent_at"):
-        db.execute(
-            update(models.User)
-            .where(models.User.id == user.id)
-            .values(password_reset_sent_at=datetime.now(timezone.utc))
-        )
-        db.commit()
+    db.commit()
 
     html = password_reset_email_html(link)
     background.add_task(send_email, decrypted_email, "Reset your password", html)
@@ -244,9 +269,16 @@ def reset_password(
 @router.post("/resend", status_code=status.HTTP_204_NO_CONTENT)
 def resend_verification(
     payload: ResendVerificationRequest,
+    request: Request,
     background: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
+    verify_turnstile_token(
+        token=payload.turnstile_token,
+        request=request,
+        action="resend_verification",
+    )
+
     normalized_email = canonicalize_email(payload.email)
     email_hash = hash_email(normalized_email)
 
@@ -259,13 +291,13 @@ def resend_verification(
     if user.is_email_verified:
         raise HTTPException(status_code=400, detail="Email already verified")
 
-    if user.email_verification_sent_at:
-        delta = datetime.now(timezone.utc) - user.email_verification_sent_at
-        if delta < timedelta(seconds=RESEND_MIN_INTERVAL):
-            raise HTTPException(
-                status_code=429,
-                detail="Please wait before requesting another email",
-            )
+    enforce_email_request_cooldown(
+        db=db,
+        action_key="resend_verification",
+        email_hash=email_hash,
+        cooldown_seconds=RESEND_MIN_INTERVAL,
+        message="Please wait before requesting another verification email.",
+    )
 
     try:
         decrypted_email = canonicalize_email(decrypt_email(user.email_enc))
@@ -274,6 +306,13 @@ def resend_verification(
 
     token = generate_email_token(user.id, decrypted_email)
     link = _verification_link(token)
+
+    mark_email_request_cooldown(
+        db=db,
+        action_key="resend_verification",
+        email_hash=email_hash,
+        commit=False,
+    )
 
     db.execute(
         update(models.User)
@@ -285,4 +324,6 @@ def resend_verification(
     html = verification_email_html(link)
     background.add_task(send_email, decrypted_email, "Verify your email", html)
     return
+
+
 
