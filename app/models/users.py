@@ -60,3 +60,8 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    feedback = relationship(
+        "UserFeedback",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )

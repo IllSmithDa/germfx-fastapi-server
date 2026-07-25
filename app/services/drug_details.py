@@ -224,44 +224,151 @@ def upsert_drug_detail_and_link(
     db.commit()
     return detail_id
 
-async def clean_warnings_for_detail(
-    db: Session, *, drug_detail_id: Optional[int] = None, drug_index_id: Optional[int] = None
-) -> Dict[str, Any]:
+def _first_string_value(value: Any) -> Optional[str]:
+    if isinstance(value, list):
+        for item in value:
+            text = str(item or "").strip()
+            if text:
+                return text
+        return None
+
+    text = str(value or "").strip()
+    return text or None
+
+
+def _resolve_resync_query(
+    *,
+    detail: DrugDetail,
+    index_row: Optional[DrugIndex],
+    override_query: Optional[str] = None,
+) -> str:
+    candidates = [
+        override_query,
+        detail.query_used,
+        detail.name,
+        detail.normalized_name,
+        index_row.name if index_row else None,
+        index_row.normalized_name if index_row else None,
+        _first_string_value(detail.brand_names),
+        _first_string_value(detail.generic_names),
+    ]
+
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if value:
+            return value
+
+    raise ValueError("Unable to determine a drug query for resync.")
+
+
+async def resync_drug_detail_by_id(
+    db: Session,
+    *,
+    drug_detail_id: int,
+    drug_query: Optional[str] = None,
+    make_latest: bool = True,
+    reset_clean_fields: bool = True,
+) -> Tuple[Dict[str, Any], int]:
     """
-    Load a DrugDetail, run Llama cleaner on warnings_raw, save warnings_key + warnings_simple,
-    and return only the side-effects fields.
+    Force-resync an existing DrugDetail row.
+
+    This intentionally bypasses the normal initial_drug_detail early-return path.
+    It always refetches OpenFDA data and updates the selected DrugDetail row.
     """
-    detail = None
-    if drug_detail_id:
-        detail = db.query(DrugDetail).get(drug_detail_id)
-        print('found detail: ', detail)
-    elif drug_index_id:
-        idx = db.query(DrugIndex).get(drug_index_id)
-        if idx:
-            latest_id = getattr(idx, "latest_detail_id", None)
-            detail = db.query(DrugDetail).get(latest_id) if latest_id else None
-            if not detail:
-                detail = (
-                    db.query(DrugDetail)
-                    .filter(DrugDetail.drug_index_id == idx.id)
-                    .order_by(DrugDetail.effective_time.desc().nullslast(), DrugDetail.id.desc())
-                    .first()
-                )
+
+    detail = db.get(DrugDetail, drug_detail_id)
 
     if not detail:
-        return {"warnings_key": {}, "warnings_simple": []}
-    raw = detail.warnings_raw or []
-    llama = await clean_with_llama(raw)  # returns {"warnings_key": {...}, "warnings_simple": [...]}
-    wk = llama.get("warnings_key") or {}
-    ws = llama.get("warnings_simple") or []
-    se = llama.get("side_effects") or []
-    tb = llama.get("adverse_reactions_table") or []
-    # Save back
-    detail.warnings_key = wk
-    detail.warnings_simple = ws
-    detail.side_effects = se
+        raise ValueError(f"DrugDetail not found: {drug_detail_id}")
+
+    index_row: Optional[DrugIndex] = None
+
+    if getattr(detail, "drug_index_id", None):
+        index_row = db.get(DrugIndex, detail.drug_index_id)
+
+    query = _resolve_resync_query(
+        detail=detail,
+        index_row=index_row,
+        override_query=drug_query,
+    )
+
+    base = await openfda.get_drug_info(query)
+
+    if not base:
+        raise ValueError(f"OpenFDA returned no results for query: {query}")
+
+    base = dict(base)
+    base["warnings_raw"] = _pick_warnings_source(base)
+
+    next_source = base.get("source") or detail.source or "openfda.label"
+    next_effective_time = _to_date(base.get("effective_time"))
+
+    if next_effective_time and detail.drug_index_id:
+        duplicate = (
+            db.query(DrugDetail)
+            .filter(
+                DrugDetail.id != detail.id,
+                DrugDetail.drug_index_id == detail.drug_index_id,
+                DrugDetail.effective_time == next_effective_time,
+                DrugDetail.source == next_source,
+            )
+            .first()
+        )
+
+        if duplicate:
+            raise ValueError(
+                "Resync would conflict with another DrugDetail row that has "
+                f"the same drug_index_id, effective_time, and source. "
+                f"Conflicting detail_id: {duplicate.id}"
+            )
+
+    display_name = detail.name or query
+
+    detail.name = display_name
+    detail.normalized_name = (display_name or "").strip().lower()
+
+    detail.brand_names = base.get("brand_names") or []
+    detail.generic_names = base.get("generic_names") or []
+    detail.manufacturer_names = base.get("manufacturer_names") or []
+    detail.route = base.get("route") or []
+    detail.product_type = base.get("product_type") or []
+
+    detail.purpose_or_indications = base.get("purpose_or_indications") or []
+    detail.dosage_and_administration = base.get("dosage_and_administration") or []
+    detail.adverse_reactions = base.get("adverse_reactions") or []
+    detail.drug_interactions = base.get("drug_interactions") or []
+    detail.boxed_warning = base.get("boxed_warning") or []
+
+    detail.warnings_raw = base.get("warnings_raw") or []
+    detail.symptoms_table = base.get("symptoms_table") or []
+
+    detail.upc_codes = base.get("upc_codes") or []
+    detail.package_ndc = base.get("package_ndc") or []
+    detail.unii = base.get("unii") or []
+    detail.rxcui = base.get("rxcui") or []
+
+    detail.openfda_meta = base.get("openfda_meta") or {}
+    detail.source = next_source
+    detail.query_used = query
+
+    if next_effective_time:
+        detail.effective_time = next_effective_time
+
+    if reset_clean_fields:
+        detail.warnings_key = {}
+        detail.warnings_simple = []
+        detail.side_effects = []
+        detail.stop_using_warnings = []
+
+    if make_latest and index_row:
+        index_row.latest_detail_id = detail.id
+        db.add(index_row)
+
     db.add(detail)
     db.commit()
+    db.refresh(detail)
 
-    return {"warnings_key": wk, "side_effects": se, "drug_detail_id": detail.id}
+    if detail.drug_index_id and not index_row:
+        index_row = db.get(DrugIndex, detail.drug_index_id)
 
+    return _build_payload(detail, index_row), detail.id

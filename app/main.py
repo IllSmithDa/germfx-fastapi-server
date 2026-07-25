@@ -3,7 +3,7 @@ from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import Base, engine
-from app.routes import account_danger, account_recovery, admin_activities, admin_drug_indexes, admin_usage_limits, admin_users, articles, auth, billing, drug_detail_export, google_auth, reactions, drug_detail, email, safety_warnings, saved_items, side_effects, suggestions, usage_limits, user_medications, user_detail, reports, reports_export, recalls, user_settings, symptom_logs, rxnorm_test, dailymed_test, brave_search_test
+from app.routes import account_danger, account_recovery, admin_activities, admin_drug_details, admin_drug_indexes, admin_usage_limits, admin_users, articles, auth, billing, drug_detail_export, google_auth, reactions, drug_detail, email, safety_warnings, saved_items, side_effects, suggestions, usage_limits, user_feedback, user_medications, user_detail, reports, reports_export, recalls, user_settings, symptom_logs, rxnorm_test, dailymed_test, brave_search_test
 
 app = FastAPI(title="SideFX FastAPI Backend")
 
@@ -64,24 +64,13 @@ api.include_router(rxnorm_test.router, prefix="/rxnorm")
 api.include_router(dailymed_test.router, prefix="/dailymed", tags=["dailymed-test"])
 api.include_router(brave_search_test.router, prefix="/brave-search", tags=["brave-barcode-search-test"])
 api.include_router(admin_users.router, prefix="/admin", tags=["admin-users"])
-api.include_router(admin_drug_indexes.router, prefix="/admin", tags=["admin-drug-indexes"],
-)
-api.include_router(
-    admin_usage_limits.router,
-    prefix="/admin/usage-limits",
-    tags=["admin-usage-limits"],
-)
-
-api.include_router(
-    usage_limits.router,
-    prefix="/usage-limits",
-    tags=["usage-limits"],
-)
-api.include_router(
-    billing.router,
-    prefix="/billing",
-    tags=["billing"],
-)
+api.include_router(admin_drug_indexes.router, prefix="/admin", tags=["admin-drug-indexes"])
+api.include_router(admin_usage_limits.router, prefix="/admin/usage-limits", tags=["admin-usage-limits"])
+api.include_router(usage_limits.router,prefix="/usage-limits", tags=["usage-limits"])
+api.include_router(billing.router, prefix="/billing", tags=["billing"])
+api.include_router(admin_drug_details.router, prefix="/admin", tags=["admin-drug-detail"])
+api.include_router(user_feedback.router, prefix="/feedback", tags=["user-feedback"])
+api.include_router(user_feedback.admin_router, prefix="/admin/feedback", tags=["admin-feedback"])
 # Mount the API group
 app.include_router(api)
 

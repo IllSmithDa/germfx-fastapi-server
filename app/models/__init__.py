@@ -42,6 +42,10 @@ from app.models.cooldowns import (
     EmailRequestCooldown,
 )
 
+from app.models.user_feedback import (
+  UserFeedback
+)
+
 __all__ = [
   "User",
   "Symptom",
@@ -61,5 +65,6 @@ __all__ = [
   "UsageLimit",
   "UserUsageCounter",
   "RequestCooldown",
-  "EmailRequestCooldown"
+  "EmailRequestCooldown",
+  "UserFeedback"
 ]

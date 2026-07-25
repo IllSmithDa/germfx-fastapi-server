@@ -1,55 +1,84 @@
-# routes/auth.py
+# app/routes/auth.py
 
-from app.services.request_cooldowns import enforce_and_mark_user_cooldown
-from app.services.subscriptions import serialize_user_subscription
-from app.services.turnstile import verify_turnstile_token
-from app.util.security import (
-  hash_password,
-  verify_password,
-  hash_email,
-  canonicalize_email,
-  encrypt_email,
-  decrypt_email
-)
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Request, BackgroundTasks, Header, Body 
-from sqlalchemy.orm import Session
-from sqlalchemy import select, func
+from __future__ import annotations
+
+import os
 from typing import List
-from app import models
-from app.db import get_db
-from app.models import User
-from app.schemas.users import ChangePasswordRequest, ChangeUsernameRequest, ChangeEmailRequest, UserOut, UserLogin, UserCreate
-from app.core.users import create_user_in_db
-from app.core.auth_config import (
-    ACCESS_COOKIE,
-    REFRESH_COOKIE,
-    ACCESS_TOKEN_SECONDS,
-    REFRESH_TOKEN_SECONDS,
-    COOKIE_SECURE,
-    COOKIE_SAMESITE,
-    COOKIE_PATH,
+
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Body,
+    Cookie,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    status,
 )
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app import models
 from app.core.auth import (
     _extract_bearer_token,
     create_access_token,
     create_refresh_token,
+    ensure_user_can_authenticate,
+    get_authenticated_user,
     verify_token,
     verify_user,
-    get_authenticated_user
 )
-from app.scripts.validator import validate_new_password, validate_username, validate_new_email
+from app.core.auth_config import (
+    ACCESS_COOKIE,
+    ACCESS_TOKEN_SECONDS,
+    COOKIE_PATH,
+    COOKIE_SAMESITE,
+    COOKIE_SECURE,
+    REFRESH_COOKIE,
+    REFRESH_TOKEN_SECONDS,
+)
+from app.core.users import create_user_in_db
+from app.db import get_db
+from app.email_secure import (
+    generate_email_change_token,
+    generate_email_token,
+    verify_email_change_token,
+)
+from app.emailer import (
+    change_email_verification_html,
+    send_email,
+    verification_email_html,
+)
+from app.models import User
+from app.schemas.users import (
+    ChangeEmailRequest,
+    ChangePasswordRequest,
+    ChangeUsernameRequest,
+    UserCreate,
+    UserLogin,
+    UserOut,
+)
+from app.scripts.validator import (
+    validate_new_email,
+    validate_new_password,
+    validate_username,
+)
+from app.services.request_cooldowns import enforce_and_mark_user_cooldown
+from app.services.subscriptions import serialize_user_subscription
+from app.services.turnstile import verify_turnstile_token
+from app.util.security import (
+    canonicalize_email,
+    decrypt_email,
+    encrypt_email,
+    hash_email,
+    hash_password,
+    verify_password,
+)
 
 
 router = APIRouter()
-
-
-COOKIE_PATH = "/"  # must match what you used when setting cookies
-# REFRESH_PATH = "/auth"  # path where refresh cookie is valid
-
-from app.util.security import decrypt_email, canonicalize_email
-from app.email_secure import generate_email_change_token, generate_email_token, verify_email_change_token
-from app.emailer import change_email_verification_html, send_email, verification_email_html
-import os
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 CLIENT_BASE_URL = os.getenv("CLIENT_BASE_URL", "http://localhost:3000")
@@ -58,11 +87,10 @@ CLIENT_BASE_URL = os.getenv("CLIENT_BASE_URL", "http://localhost:3000")
 def _email_change_verification_link(token: str) -> str:
     return f"{CLIENT_BASE_URL}/verify-email-change?token={token}"
 
+
 def _verification_link(token: str) -> str:
     return f"{API_BASE_URL}/api/auth/verify?token={token}"
 
-def _email_change_verification_link(token: str) -> str:
-    return f"{CLIENT_BASE_URL}/verify-email-change?token={token}"
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def create_user(
@@ -92,13 +120,19 @@ def create_user(
             html,
         )
     except Exception:
+        # Account creation should not fail just because the welcome email failed.
         pass
 
     return created_user
 
 
 @router.post("/login")
-def login_user(payload: UserLogin, request: Request, response: Response, db: Session = Depends(get_db)):
+def login_user(
+    payload: UserLogin,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
     """
     Authenticate a user by identifier (email or username) + password,
     issue JWTs, and set HttpOnly cookies.
@@ -122,46 +156,22 @@ def login_user(payload: UserLogin, request: Request, response: Response, db: Ses
             },
         )
 
-    if not user.is_active:
-        account_status = getattr(user, "account_status", None)
+    # Blocks suspended/deactivated/inactive users before issuing new tokens.
+    ensure_user_can_authenticate(user)
 
-        if account_status == "deactivated":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "message": "This account is deactivated. You can reactivate it.",
-                    "code": "ACCOUNT_DEACTIVATED",
-                },
-            )
+    access_token = create_access_token(
+        {
+            "sub": str(user.id),
+            "tv": user.token_version,
+        }
+    )
+    refresh_token = create_refresh_token(
+        {
+            "sub": str(user.id),
+            "tv": user.token_version,
+        }
+    )
 
-        if account_status == "suspended":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "message": "This account has been suspended. Please contact support.",
-                    "code": "ACCOUNT_SUSPENDED",
-                },
-            )
-
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "message": "This account is inactive.",
-                "code": "ACCOUNT_INACTIVE",
-            },
-        )
-
-    # Create tokens
-    access_token = create_access_token({
-        "sub": str(user.id),
-        "tv": user.token_version
-    })
-    refresh_token = create_refresh_token({
-        "sub": str(user.id),
-        "tv": user.token_version,
-    })
-
-    # Set HttpOnly cookies
     response.set_cookie(
         key=ACCESS_COOKIE,
         value=access_token,
@@ -169,7 +179,7 @@ def login_user(payload: UserLogin, request: Request, response: Response, db: Ses
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
         max_age=ACCESS_TOKEN_SECONDS,
-        path="/",
+        path=COOKIE_PATH,
     )
     response.set_cookie(
         key=REFRESH_COOKIE,
@@ -178,23 +188,23 @@ def login_user(payload: UserLogin, request: Request, response: Response, db: Ses
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
         max_age=REFRESH_TOKEN_SECONDS,
-        path="/",
+        path=COOKIE_PATH,
     )
 
-    # Keep returning the user object as before
     return {
-    "user": {
-        "id": user.id,
-        "username": user.username,
-        "is_active": user.is_active,
-        "is_email_verified": user.is_email_verified,
-        "account_status": getattr(user, "account_status", None),
-        "created_at": user.created_at,
-    },
-    "access_token": access_token,
-    "refresh_token": refresh_token,
-    "token_type": "bearer",
-}
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "is_active": user.is_active,
+            "is_email_verified": user.is_email_verified,
+            "account_status": getattr(user, "account_status", None),
+            "created_at": user.created_at,
+        },
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+    }
+
 
 @router.post("/refresh")
 def refresh_access_token(
@@ -205,46 +215,77 @@ def refresh_access_token(
 ):
     bearer_refresh_token = _extract_bearer_token(authorization)
     token = bearer_refresh_token or refresh_token
-    
-    if not token:
-        raise HTTPException(status_code=401, detail="Refresh token missing")
-    
-    payload = verify_token(token, token_type="refresh")
 
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "message": "Refresh token missing.",
+                "code": "REFRESH_TOKEN_MISSING",
+            },
+        )
+
+    payload = verify_token(token, token_type="refresh")
 
     user_id = payload.get("sub")
     if not user_id:
-        print("Invalid refresh token: no user_id in payload")
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "message": "Invalid refresh token.",
+                "code": "INVALID_REFRESH_TOKEN",
+            },
+        )
 
     user = db.execute(
         select(models.User).where(models.User.id == int(user_id))
     ).scalars().first()
 
     if not user:
-        print(f"User not found for id {user_id} in refresh token")
-        raise HTTPException(status_code=401, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "message": "User not found.",
+                "code": "USER_NOT_FOUND",
+            },
+        )
+
+    # Blocks suspended/deactivated/inactive users before issuing refreshed tokens.
+    ensure_user_can_authenticate(user)
 
     token_version = payload.get("tv")
     try:
         token_version = int(token_version)
     except (TypeError, ValueError):
-        print("Invalid token version in refresh token")
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "message": "Invalid refresh token.",
+                "code": "INVALID_REFRESH_TOKEN",
+            },
+        )
 
     if token_version != user.token_version:
-        print("Refresh token revoked")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "message": "Refresh token revoked.",
+                "code": "REFRESH_TOKEN_REVOKED",
+            },
+        )
 
-        raise HTTPException(status_code=401, detail="Refresh token revoked")
-
-    new_access = create_access_token({
-        "sub": str(user.id),
-        "tv": user.token_version,
-    })
-    new_refresh = create_refresh_token({
-        "sub": str(user.id),
-        "tv": user.token_version,
-    })
+    new_access = create_access_token(
+        {
+            "sub": str(user.id),
+            "tv": user.token_version,
+        }
+    )
+    new_refresh = create_refresh_token(
+        {
+            "sub": str(user.id),
+            "tv": user.token_version,
+        }
+    )
 
     response.set_cookie(
         key=ACCESS_COOKIE,
@@ -253,7 +294,7 @@ def refresh_access_token(
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
         max_age=ACCESS_TOKEN_SECONDS,
-        path="/",
+        path=COOKIE_PATH,
     )
     response.set_cookie(
         key=REFRESH_COOKIE,
@@ -262,7 +303,7 @@ def refresh_access_token(
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
         max_age=REFRESH_TOKEN_SECONDS,
-        path="/",
+        path=COOKIE_PATH,
     )
 
     return {
@@ -293,13 +334,12 @@ def me(current_user: models.User = Depends(get_authenticated_user)):
         "account_status": getattr(current_user, "account_status", None),
         "created_at": current_user.created_at,
         "role": current_user.role,
-
-        # New subscription/access fields
         "subscription": subscription,
         "is_plus": subscription["is_plus"],
         "subscription_plan": subscription["plan"],
         "subscription_status": subscription["status"],
     }
+
 
 @router.get("/", response_model=List[UserOut])
 def get_users(db: Session = Depends(get_db)):
@@ -308,8 +348,11 @@ def get_users(db: Session = Depends(get_db)):
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(response: Response, request: Request, db: Session = Depends(get_db)):
-    print("Logout requested. Clearing cookies.")
+def logout(
+    response: Response,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     refresh_token = request.cookies.get(REFRESH_COOKIE)
 
     if refresh_token:
@@ -327,7 +370,7 @@ def logout(response: Response, request: Request, db: Session = Depends(get_db)):
                     db.commit()
 
         except Exception:
-            # Expired/invalid refresh token should not prevent logout
+            # Expired/invalid refresh token should not prevent logout.
             pass
 
     response.delete_cookie(
@@ -340,6 +383,7 @@ def logout(response: Response, request: Request, db: Session = Depends(get_db)):
     )
     return
 
+
 @router.post("/change-password", status_code=status.HTTP_200_OK)
 def change_password(
     payload: ChangePasswordRequest,
@@ -347,14 +391,12 @@ def change_password(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_authenticated_user),
 ):
-    # Verify current password
     if not verify_password(payload.current_password, current_user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Current password is incorrect",
         )
 
-    # Backend password policy
     password_error = validate_new_password(payload.new_password)
     if password_error:
         raise HTTPException(
@@ -370,18 +412,14 @@ def change_password(
         message="Please wait before changing your password again.",
         commit=False,
     )
-    
-    # Update password hash
-    current_user.password_hash = hash_password(payload.new_password)
 
-    # Invalidate old refresh sessions
+    current_user.password_hash = hash_password(payload.new_password)
     current_user.token_version += 1
 
     db.add(current_user)
     db.commit()
     db.refresh(current_user)
 
-    # Optional but recommended: clear cookies so user logs in again
     response.delete_cookie(key=ACCESS_COOKIE, path=COOKIE_PATH)
     response.delete_cookie(key=REFRESH_COOKIE, path=COOKIE_PATH)
 
@@ -412,15 +450,13 @@ def change_username(
     existing_user = db.execute(
         select(models.User).where(func.lower(models.User.username) == new_username.lower())
     ).scalars().first()
-    # print("existing user check: ", existing_user)
 
     if existing_user and existing_user.id != current_user.id:
-        # print("username already taken")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Username already taken",
         )
-    
+
     enforce_and_mark_user_cooldown(
         db=db,
         user_id=current_user.id,
@@ -437,6 +473,7 @@ def change_username(
 
     return current_user
 
+
 @router.post("/change-email", status_code=status.HTTP_200_OK)
 def request_email_change(
     payload: ChangeEmailRequest,
@@ -446,14 +483,12 @@ def request_email_change(
 ):
     new_email = canonicalize_email(payload.new_email)
 
-    # Confirm current password
     if not verify_password(payload.current_password, current_user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Current password is incorrect",
         )
 
-    # Backend email validation
     email_error = validate_new_email(new_email)
     if email_error:
         raise HTTPException(
@@ -461,7 +496,6 @@ def request_email_change(
             detail=email_error,
         )
 
-    # Compare against current email
     try:
         current_email = canonicalize_email(decrypt_email(current_user.email_enc))
     except Exception:
@@ -476,7 +510,6 @@ def request_email_change(
             detail="New email must be different from your current email",
         )
 
-    # Check uniqueness before sending verification
     new_email_hash = hash_email(new_email)
 
     existing_user = db.execute(
@@ -497,7 +530,7 @@ def request_email_change(
         message="Please wait before requesting another email change.",
         commit=True,
     )
-    
+
     token = generate_email_change_token(
         user_id=current_user.id,
         current_email_hash=current_user.email_hash,
@@ -517,6 +550,7 @@ def request_email_change(
     return {
         "message": "Verification email sent. Please check your new email address to complete the change.",
     }
+
 
 @router.post("/verify-email-change", status_code=status.HTTP_200_OK)
 def verify_email_change(

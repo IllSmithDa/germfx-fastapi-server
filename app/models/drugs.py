@@ -86,6 +86,7 @@ class DrugDetail(Base):
     warnings_key = Column(JSONB)
     warnings_raw = Column(ARRAY(Text))
     warnings_simple = Column(ARRAY(Text))
+    safety_warnings_curated = Column(JSONB, nullable=True)
     side_effects = Column(ARRAY(String))
     stop_using_warnings = Column(ARRAY(String))
 

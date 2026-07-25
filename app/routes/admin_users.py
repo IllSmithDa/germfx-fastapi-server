@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import hmac
 import os
 import re
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from app.schemas.admin import SuspendUserRequest, UnsuspendUserRequest
+from fastapi import APIRouter, Depends, Header, HTTPException, status, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -38,8 +40,20 @@ class AdminUserOut(BaseModel):
     role: str
     is_active: bool
     account_status: str | None = None
+    suspended_at: str | None = None
+    suspension_reason: str | None = None
+    created_at: str | None = None
+    can_suspend: bool = False
+    can_unsuspend: bool = False
 
+class AdminUserListOut(BaseModel):
+    items: list[AdminUserOut]
+    total: int
+    page: int
+    page_size: int
+    has_next: bool
 
+    
 class AdminStatusOut(BaseModel):
     is_admin: bool
     role: str
@@ -54,6 +68,46 @@ def _looks_like_email(value: str) -> bool:
             value.strip(),
         )
     )
+
+def _admin_user_out(user: User) -> dict:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "role": getattr(user, "role", "user"),
+        "is_active": user.is_active,
+        "account_status": getattr(user, "account_status", None),
+        "suspended_at": getattr(user, "suspended_at", None),
+        "suspension_reason": getattr(user, "suspension_reason", None),
+    }
+
+def _admin_user_out(user: User, acting_admin: User | None = None) -> dict:
+    is_admin = getattr(user, "role", "user") == "admin"
+    is_self = bool(acting_admin and user.id == acting_admin.id)
+    is_suspended = (
+        getattr(user, "account_status", None) == "suspended"
+        or not bool(user.is_active)
+    )
+
+    return {
+        "id": user.id,
+        "username": user.username,
+        "role": getattr(user, "role", "user"),
+        "is_active": user.is_active,
+        "account_status": getattr(user, "account_status", None),
+        "suspended_at": (
+            user.suspended_at.isoformat()
+            if getattr(user, "suspended_at", None)
+            else None
+        ),
+        "suspension_reason": getattr(user, "suspension_reason", None),
+        "created_at": (
+            user.created_at.isoformat()
+            if getattr(user, "created_at", None)
+            else None
+        ),
+        "can_suspend": not is_admin and not is_self and not is_suspended,
+        "can_unsuspend": not is_admin and not is_self and is_suspended,
+    }
 
 
 def _get_admin_bootstrap_token() -> str | None:
@@ -137,9 +191,9 @@ def require_admin_or_bootstrap(
     )
 
 
-def _find_user_for_role_assignment(
+def _find_user_for_admin_action(
     db: Session,
-    payload: AssignUserRoleRequest,
+    payload: AssignUserRoleRequest | SuspendUserRequest | UnsuspendUserRequest,
 ) -> User:
     supplied = [
         payload.user_id is not None,
@@ -235,7 +289,7 @@ def assign_user_role(
     production/Render unless you intentionally need emergency bootstrap access.
     """
     
-    user = _find_user_for_role_assignment(
+    user = _find_user_for_admin_action(
         db,
         payload,
     )
@@ -246,13 +300,7 @@ def assign_user_role(
     db.commit()
     db.refresh(user)
 
-    return {
-        "id": user.id,
-        "username": user.username,
-        "role": user.role,
-        "is_active": user.is_active,
-        "account_status": getattr(user, "account_status", None),
-    }
+    return _admin_user_out(user)
 
 
 @router.get(
@@ -262,6 +310,8 @@ def assign_user_role(
 def get_my_admin_status(
     current_user: User = Depends(require_admin),
 ):
+    
+    print("running")
     """
     Verify that the currently authenticated account has real admin access.
 
@@ -274,4 +324,167 @@ def get_my_admin_status(
         "role": getattr(current_user, "role", "user"),
         "user_id": current_user.id,
         "username": current_user.username,
+    }
+
+@router.patch(
+    "/users/suspend",
+    response_model=AdminUserOut,
+)
+def suspend_user(
+    payload: SuspendUserRequest,
+    db: Session = Depends(get_db),
+    acting_admin: User = Depends(require_admin),
+):
+    """
+    Suspend/ban a user account.
+
+    This requires a real authenticated admin account.
+    Bootstrap-token access is intentionally not allowed here.
+    """
+
+    user = _find_user_for_admin_action(
+        db,
+        payload,
+    )
+
+    if user.id == acting_admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": "You cannot suspend your own admin account.",
+                "code": "CANNOT_SUSPEND_SELF",
+            },
+        )
+
+    if getattr(user, "role", "user") == "admin":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": "Admin accounts cannot be suspended from this route.",
+                "code": "CANNOT_SUSPEND_ADMIN",
+            },
+        )
+
+    reason = payload.reason.strip() if payload.reason else None
+
+    user.is_active = False
+    user.account_status = "suspended"
+    user.suspended_at = datetime.now(timezone.utc)
+    user.suspension_reason = reason
+
+    # Revoke existing access/refresh tokens.
+    user.token_version += 1
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return _admin_user_out(user)
+
+@router.patch(
+    "/users/unsuspend",
+    response_model=AdminUserOut,
+)
+def unsuspend_user(
+    payload: UnsuspendUserRequest,
+    db: Session = Depends(get_db),
+    acting_admin: User = Depends(require_admin),
+):
+    """
+    Restore a suspended account.
+
+    This does not restore deleted data because suspension should not delete data.
+    """
+
+    user = _find_user_for_admin_action(
+        db,
+        payload,
+    )
+
+    if user.account_status != "suspended":
+        return _admin_user_out(user)
+
+    user.is_active = True
+    user.account_status = "active"
+    user.suspended_at = None
+    user.suspension_reason = None
+
+    # Force fresh token state after reinstatement.
+    user.token_version += 1
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return _admin_user_out(user)
+
+@router.get(
+    "/users",
+    response_model=AdminUserListOut,
+)
+def list_admin_users(
+    query: str | None = Query(default=None, max_length=100),
+    status_filter: Literal["all", "active", "suspended"] = Query(
+        default="all",
+        alias="status",
+    ),
+    include_admins: bool = Query(default=False),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    db: Session = Depends(get_db),
+    acting_admin: User = Depends(require_admin),
+):
+    users_query = db.query(User)
+
+    # Default: do not show admin accounts in the ban/suspend list.
+    if not include_admins:
+        users_query = users_query.filter(User.role != "admin")
+
+    if status_filter == "active":
+        users_query = users_query.filter(
+            User.is_active.is_(True),
+            User.account_status == "active",
+        )
+
+    if status_filter == "suspended":
+        users_query = users_query.filter(
+            User.account_status == "suspended",
+        )
+
+    if query:
+        search_value = query.strip()
+
+        if search_value.isdigit():
+            users_query = users_query.filter(User.id == int(search_value))
+        elif _looks_like_email(search_value):
+            normalized_email = canonicalize_email(search_value)
+            users_query = users_query.filter(
+                User.email_hash == hash_email(normalized_email)
+            )
+        else:
+            users_query = users_query.filter(
+                func.lower(User.username).like(f"%{search_value.lower()}%")
+            )
+
+    total = users_query.count()
+
+    offset = (page - 1) * page_size
+
+    users = (
+        users_query
+        .order_by(User.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
+
+    return {
+        "items": [
+            _admin_user_out(user, acting_admin=acting_admin)
+            for user in users
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_next": offset + len(users) < total,
     }
