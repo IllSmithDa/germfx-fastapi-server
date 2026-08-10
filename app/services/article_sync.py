@@ -174,6 +174,16 @@ def prune_old_articles(db: Session, keep: int = MAX_ARTICLES) -> int:
     if not oldest_ids:
         return 0
 
+    # Reactions are not snapshots and should not outlive their source article.
+    # Saved items are intentionally left alone because they store their own
+    # article snapshot data.
+    db.execute(
+        delete(models.ContentReaction).where(
+            models.ContentReaction.content_type == "news",
+            models.ContentReaction.source_item_id.in_(oldest_ids),
+        )
+    )
+
     db.execute(
         delete(models.ExternalArticle).where(
             models.ExternalArticle.id.in_(oldest_ids)
