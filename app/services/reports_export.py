@@ -187,7 +187,7 @@ def build_user_report_pdf(
     top_symptoms = symptom_counter.most_common(top_symptom_limit)
 
     # Header
-    story.append(Paragraph("SideFX Health Report", title_style))
+    story.append(Paragraph("GermFx Health Report", title_style))
     story.append(
         Paragraph(
             f"Generated on {today.strftime('%B %d, %Y')} - covering the last {days} days",
@@ -389,5 +389,5 @@ def build_user_report_pdf(
     doc.build(story)
     buffer.seek(0)
 
-    filename = f"sidefx-report-user-{user_id}-{today.isoformat()}.pdf"
+    filename = f"GermFx-report-user-{user_id}-{today.isoformat()}.pdf"
     return buffer, filename

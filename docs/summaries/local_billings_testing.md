@@ -1,10 +1,10 @@
-# SideFX Paddle Billing + Webhook Setup Guide
+# GermFx Paddle Billing + Webhook Setup Guide
 
 This document explains how to test Paddle Billing locally with Cloudflare Tunnel, how to configure Paddle sandbox webhooks, and how production should work when the FastAPI server is hosted on Render.
 
 ## 1. Overview
 
-SideFX uses a provider-agnostic subscription model.
+GermFx uses a provider-agnostic subscription model.
 
 The payment provider can be:
 
@@ -123,7 +123,7 @@ https://your-render-api.onrender.com/api/billing/webhook/paddle
 Or, if you later use a custom API domain:
 
 ```txt
-https://api.sidefx.app/api/billing/webhook/paddle
+https://api.GermFx.app/api/billing/webhook/paddle
 ```
 
 In production, Paddle sends webhooks directly to the public Render API route. No tunnel is needed.
@@ -134,8 +134,8 @@ Create these in Paddle Sandbox first:
 
 ```txt
 1. Sandbox account
-2. Product: SideFX Plus
-3. Recurring monthly price for SideFX Plus
+2. Product: GermFx Plus
+3. Recurring monthly price for GermFx Plus
 4. Paddle sandbox API key
 5. Paddle sandbox price ID
 6. Paddle notification destination
@@ -157,7 +157,7 @@ The webhook secret is specific to the notification destination. Sandbox and live
 Use this for Paddle or payment-provider product/service description fields:
 
 ```txt
-SideFX is a health-tracking application that helps users track medications, log symptoms, review medication details, monitor recalls, save health-related items, and generate reports. Paid subscriptions provide access to expanded tracking, advanced reports, exports, and premium account features.
+GermFx is a health-tracking application that helps users track medications, log symptoms, review medication details, monitor recalls, save health-related items, and generate reports. Paid subscriptions provide access to expanded tracking, advanced reports, exports, and premium account features.
 ```
 
 ## 7. Backend environment variables for local sandbox testing
@@ -447,7 +447,7 @@ Then:
 ```txt
 1. Update Paddle sandbox notification destination with the current tunnel URL.
 2. Restart FastAPI after setting PADDLE_WEBHOOK_SECRET.
-3. Log into SideFX locally.
+3. Log into GermFx locally.
 4. Open the pricing page.
 5. Click Subscribe.
 6. Confirm the app calls /api/billing/checkout.
@@ -671,7 +671,7 @@ https://side-fx-fastserver.onrender.com/api/billing/webhook/paddle
 In Paddle live mode:
 
 ```txt
-1. Create live Product: SideFX Plus.
+1. Create live Product: GermFx Plus.
 2. Create live recurring monthly Price.
 3. Create live API key.
 4. Create live notification destination.

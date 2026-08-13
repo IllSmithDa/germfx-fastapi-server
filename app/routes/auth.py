@@ -116,7 +116,7 @@ def create_user(
         background.add_task(
             send_email,
             decrypted_email,
-            "Welcome to SideFX — verify your email",
+            "Welcome to GermFx — verify your email",
             html,
         )
     except Exception:
@@ -543,7 +543,7 @@ def request_email_change(
     background.add_task(
         send_email,
         new_email,
-        "Confirm your SideFX email change",
+        "Confirm your GermFx email change",
         html,
     )
 

@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 from app import models
 
 ARTICLE_FEED_NAME = "general_health_articles"
-ARTICLE_STALE_AFTER_HOURS = 8  # switch to 8 once done testing
+ARTICLE_STALE_AFTER_HOURS = .001  # switch to 8 once done testing
+RETRIEVAL_ONLY = False  # set False before restoring normal database sync behavior
 MAX_ARTICLES = 500
 
 TARGET_ARTICLES_PER_SYNC = 10
@@ -37,7 +38,8 @@ RECALL_TITLE_QUERY = "recall OR recalled OR recalls"
 # - Do not include a generic word such as "warning", which can pull weather,
 #   politics, travel, and other unrelated stories.
 GENERAL_HEALTH_META_QUERY = (
-    "health OR medical OR drug OR medication OR FDA OR disease OR outbreak OR vaccine OR hospital"
+    "disease OR outbreak OR vaccine OR medication OR drug OR FDA "
+    "OR treatment OR infection OR symptoms"
 )
 
 # A priority result must have BOTH:
@@ -47,6 +49,38 @@ RECALL_SIGNAL_TERMS = {
     "recall",
     "recalled",
     "recalls",
+}
+
+# A real recall should also have product/regulatory/safety context.
+# This prevents headlines such as "Celebrity recalls painful experience..."
+# from qualifying just because the verb "recalls" appears beside a health term.
+RECALL_PRODUCT_CONTEXT_TERMS = {
+    "food",
+    "foods",
+    "drug",
+    "drugs",
+    "medication",
+    "medications",
+    "supplement",
+    "supplements",
+    "fda",
+    "usda",
+    "salmonella",
+    "listeria",
+    "coli",
+    "cyclospora",
+    "allergen",
+    "allergens",
+    "undeclared",
+    "contamination",
+    "contaminated",
+    "bacteria",
+    "bacterial",
+    "pathogen",
+    "pathogens",
+    "poisoning",
+    "mold",
+    "mould",
 }
 
 HEALTH_CONTEXT_TERMS = {
@@ -78,10 +112,6 @@ HEALTH_CONTEXT_TERMS = {
     "illnesses",
     "disease",
     "diseases",
-    "patient",
-    "patients",
-    "hospital",
-    "hospitals",
     "vaccine",
     "vaccines",
     "treatment",
@@ -91,7 +121,6 @@ HEALTH_CONTEXT_TERMS = {
     "heart",
     "nutrition",
     "diet",
-    "wellness",
     "ebola",
     "measles",
     "mpox",
@@ -116,40 +145,58 @@ HEALTH_CONTEXT_TERMS = {
 
 # Broader local gate for the general-health fallback. This prevents a provider
 # category/query false positive from being stored as health news.
-GENERAL_HEALTH_TERMS = HEALTH_CONTEXT_TERMS | {
-    "doctor",
-    "doctors",
-    "physician",
-    "physicians",
-    "therapy",
-    "therapies",
-    "mental",
-    "brain",
-    "diabetes",
-    "obesity",
-    "exercise",
-    "fitness",
+GENERAL_HEALTH_TERMS = {
+    "disease",
+    "diseases",
+    "outbreak",
+    "outbreaks",
+    "vaccine",
+    "vaccines",
+    "medication",
+    "medications",
+    "drug",
+    "drugs",
+    "fda",
+    "treatment",
+    "treatments",
+    "infection",
+    "infections",
     "symptom",
     "symptoms",
     "diagnosis",
     "diagnosed",
-    "research",
-    "study",
-    "disease",
-    "epidemic",
-    "healthcare",
-    "health",
-    "hospital",
-    "nurse",
-    "nurses",
-    "clinic",
-    "clinics",
-    "treatment",
-    "treatments",
-    "vaccine",
-    "vaccines",
+    "clinical",
+    "cancer",
+    "heart",
+    "cardiac",
+    "stroke",
+    "diabetes",
+    "obesity",
+    "mental",
+    "brain",
     "virus",
+    "viral",
+    "bacteria",
+    "bacterial",
+    "salmonella",
+    "listeria",
+    "cyclospora",
+    "ebola",
+    "measles",
+    "mpox",
+    "norovirus",
+    "hepatitis",
+    "botulism",
+    "parasite",
+    "parasitic",
+    "allergen",
+    "allergens",
+    "therapy",
+    "therapies",
+    "nutrition",
+    "exercise",
 }
+
 
 TITLE_TOPIC_STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "because", "by", "for",
@@ -337,7 +384,7 @@ def _article_relevance_text(item: dict[str, Any]) -> str:
     """
     Deliberately validate against the user-facing headline/description rather
     than the full article body. A stray term deep in an unrelated article
-    should not be enough to put it into the SideFX health feed.
+    should not be enough to put it into the GermFx health feed.
     """
     pieces = [
         str(item.get("title") or ""),
@@ -363,7 +410,7 @@ def _is_recall_relevant(item: dict[str, Any]) -> bool:
 
     return (
         _contains_any_term(text, RECALL_SIGNAL_TERMS)
-        and _contains_any_term(text, HEALTH_CONTEXT_TERMS)
+        and _contains_any_term(text, RECALL_PRODUCT_CONTEXT_TERMS)
     )
 
 
@@ -657,10 +704,12 @@ def prune_old_articles(db: Session, keep: int = MAX_ARTICLES) -> int:
 
 def sync_general_articles(db: Session) -> dict:
     sync = _get_or_create_sync_state(db, ARTICLE_FEED_NAME)
-    sync.status = "running"
-    sync.notes = None
-    db.add(sync)
-    db.commit()
+
+    if not RETRIEVAL_ONLY:
+        sync.status = "running"
+        sync.notes = None
+        db.add(sync)
+        db.commit()
 
     try:
         fetched_items, fetch_stats = fetch_prioritized_article_payloads()
@@ -670,7 +719,23 @@ def sync_general_articles(db: Session) -> dict:
             for item in fetched_items
         ]
         
-        print("normalized aritle titles: ", [item.get("title") for item in normalized])
+        print(
+            "normalized article titles:",
+            [item.get("title") for item in normalized],
+        )
+
+        if RETRIEVAL_ONLY:
+            # Testing mode: do not stage INSERT/UPDATE/DELETE operations at all.
+            # Discard any uncommitted sync-state object work and return only
+            # retrieval/filtering diagnostics.
+            db.rollback()
+
+            return {
+                "feed_name": ARTICLE_FEED_NAME,
+                "retrieval_only": True,
+                **fetch_stats,
+            }
+
         upserted = upsert_articles(db, normalized)
         deleted = prune_old_articles(db, keep=MAX_ARTICLES)
 
@@ -686,9 +751,12 @@ def sync_general_articles(db: Session) -> dict:
             f"upserted {upserted}, pruned {deleted} old records"
         )
 
+    
         db.add(sync)
         db.commit()
 
+        print(
+            f"Article sync completed: upserted {upserted}, pruned {deleted} old records")
         return {
             "feed_name": ARTICLE_FEED_NAME,
             "upserted": upserted,
@@ -697,6 +765,7 @@ def sync_general_articles(db: Session) -> dict:
         }
 
     except Exception as e:
+        print(f"Article sync failed: {e}")
         db.rollback()
 
         sync = _get_or_create_sync_state(db, ARTICLE_FEED_NAME)

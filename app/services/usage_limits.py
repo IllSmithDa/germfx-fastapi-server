@@ -64,7 +64,7 @@ def enforce_free_usage_limit(
         detail={
             "message": (
                 f"Free accounts can create up to {free_limit} {label}. "
-                "Upgrade to SideFX Plus for unlimited access."
+                "Upgrade to GermFx Plus for unlimited access."
             ),
             "code": "FREE_LIMIT_REACHED",
             "feature_key": feature_key,
@@ -137,7 +137,7 @@ def enforce_and_increment_usage_counter(
             detail={
                 "message": (
                     f"Free accounts can use up to {free_limit} {label}. "
-                    "Upgrade to SideFX Plus for unlimited access."
+                    "Upgrade to GermFx Plus for unlimited access."
                 ),
                 "code": "FREE_LIMIT_REACHED",
                 "feature_key": feature_key,

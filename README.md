@@ -1,6 +1,6 @@
-# SideFX FastAPI Backend (Postgres via Supabase) + OpenFDA
+# GermFx FastAPI Backend (Postgres via Supabase) + OpenFDA
 
-This project is the backend for **SideFX**, a medication tracking and symptom logging app.  
+This project is the backend for **GermFx**, a medication tracking and symptom logging app.  
 It exposes APIs for users, medications, symptom logs, and integrates with the **OpenFDA** API.
 
 ---

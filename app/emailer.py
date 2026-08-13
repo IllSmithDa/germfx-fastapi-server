@@ -18,7 +18,7 @@ def _get_provider() -> EmailProvider:
 
 
 def _get_from_email() -> str:
-    value = os.getenv("EMAIL_FROM", "SideFX <onboarding@resend.dev>")
+    value = os.getenv("EMAIL_FROM", "GermFx <onboarding@resend.dev>")
 
     return value
 
@@ -140,7 +140,7 @@ def verification_email_html(link: str) -> str:
                       text-transform:uppercase;
                     "
                   >
-                    Welcome to SideFX
+                    Welcome to GermFx
                   </div>
 
                   <h1
@@ -163,7 +163,7 @@ def verification_email_html(link: str) -> str:
                       color:#475569;
                     "
                   >
-                    SideFX helps you track symptoms, understand medications,
+                    GermFx helps you track symptoms, understand medications,
                     monitor recalls and health news, and organize important
                     health information in one place.
                   </p>
@@ -213,7 +213,7 @@ def verification_email_html(link: str) -> str:
                       color:#94a3b8;
                     "
                   >
-                    © SideFX
+                    © GermFx
                   </p>
                 </div>
               </div>
@@ -287,7 +287,7 @@ def change_email_verification_html(link: str, new_email: str) -> str:
                       text-transform:uppercase;
                     "
                   >
-                    SideFX Account Security
+                    GermFx Account Security
                   </div>
 
                   <h1
@@ -311,7 +311,7 @@ def change_email_verification_html(link: str, new_email: str) -> str:
                     "
                   >
                     Click the button below to confirm that you want to use
-                    <strong>{new_email}</strong> as your SideFX account email.
+                    <strong>{new_email}</strong> as your GermFx account email.
                   </p>
                 </div>
 
@@ -360,7 +360,7 @@ def change_email_verification_html(link: str, new_email: str) -> str:
                       color:#94a3b8;
                     "
                   >
-                    © SideFX
+                    © GermFx
                   </p>
                 </div>
               </div>
