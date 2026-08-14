@@ -11,6 +11,7 @@ ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "https://localhost:3000",
     "https://germfx-client.netlify.app/",
+    "https://sidefx-client.netlify.app/",
     "http://127.0.0.1:3000",
     "https://127.0.0.1:3000",
     "http://localhost:8081",
