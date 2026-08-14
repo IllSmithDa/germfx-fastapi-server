@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app import models
 
 ARTICLE_FEED_NAME = "general_health_articles"
-ARTICLE_STALE_AFTER_HOURS = .001  # switch to 8 once done testing
+ARTICLE_STALE_AFTER_HOURS = 8  # switch to 8 once done testing
 RETRIEVAL_ONLY = False  # set False before restoring normal database sync behavior
 MAX_ARTICLES = 500
 

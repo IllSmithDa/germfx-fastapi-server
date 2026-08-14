@@ -15,7 +15,7 @@ from sqlalchemy import or_, func, and_
 OPENFDA_BASE = "https://api.fda.gov"
 DEFAULT_TIMEOUT = 20
 MAX_TOTAL_RECALLS = 520
-MAX_NEW_PER_SOURCE = 40
+MAX_NEW_PER_SOURCE = 100
 
 
 def _safe_get(d: Dict[str, Any], key: str) -> Optional[str]:
@@ -124,26 +124,36 @@ def _recall_exists(db: Session, source: str, recall_number: Optional[str]) -> bo
     return existing is not None
 
 
-def _insert_recall_if_new(db: Session, payload: Dict[str, Any]) -> bool:
+def _payload_exists(db: Session, payload: Dict[str, Any]) -> bool:
+    """
+    Check whether one normalized recall payload is already stored.
+
+    recall_number remains the preferred identity. The title/company/date
+    fallback mirrors _insert_recall_if_new() for the uncommon case where the
+    source does not provide a recall number.
+    """
     source = payload["source"]
     recall_number = payload.get("recall_number")
 
-    if recall_number and _recall_exists(db, source, recall_number):
-        return False
+    if recall_number:
+        return _recall_exists(db, source, recall_number)
 
-    if not recall_number:
-        existing = (
-            db.query(RecallItem)
-            .filter(
-                RecallItem.source == source,
-                RecallItem.title == payload["title"],
-                RecallItem.company == payload.get("company"),
-                RecallItem.recall_date == payload.get("recall_date"),
-            )
-            .first()
+    existing = (
+        db.query(RecallItem)
+        .filter(
+            RecallItem.source == source,
+            RecallItem.title == payload["title"],
+            RecallItem.company == payload.get("company"),
+            RecallItem.recall_date == payload.get("recall_date"),
         )
-        if existing:
-            return False
+        .first()
+    )
+    return existing is not None
+
+
+def _insert_recall_if_new(db: Session, payload: Dict[str, Any]) -> bool:
+    if _payload_exists(db, payload):
+        return False
 
     db.add(RecallItem(**payload))
     return True
@@ -167,6 +177,18 @@ def trim_old_recalls(db: Session, max_total: int = MAX_TOTAL_RECALLS) -> int:
         .limit(excess)
         .all()
     )
+
+    oldest_ids = [row.id for row in oldest]
+
+    if oldest_ids:
+        (
+            db.query(ContentReaction)
+            .filter(
+                ContentReaction.content_type == "recall",
+                ContentReaction.source_item_id.in_(oldest_ids),
+            )
+            .delete(synchronize_session=False)
+        )
 
     for row in oldest:
         db.delete(row)
@@ -195,24 +217,24 @@ def _get_latest_report_date_from_payloads(payloads: List[Dict[str, Any]]) -> Opt
 
 
 def should_sync_recalls(db: Session, max_new_per_source: int = MAX_NEW_PER_SOURCE) -> bool:
-    latest_stored = get_latest_stored_report_date(db)
+    """
+    Return True when the latest openFDA windows contain at least one recall
+    that is not already stored.
 
-    # First sync: DB empty or no report_date stored yet
-    if latest_stored is None:
-        return True
-
+    Do not use report_date as a hard cursor. Multiple recalls can share the
+    same report_date, and an endpoint can expose additional records without
+    advancing its newest date.
+    """
     food_raw = _fetch_food_recalls(limit=max_new_per_source)
     drug_raw = _fetch_drug_recalls(limit=max_new_per_source)
 
     normalized_food = [_normalize_food_item(item) for item in food_raw]
     normalized_drug = [_normalize_drug_item(item) for item in drug_raw]
 
-    latest_source = _get_latest_report_date_from_payloads([*normalized_food, *normalized_drug])
-
-    if latest_source is None:
-        return False
-
-    return latest_source > latest_stored
+    return any(
+        not _payload_exists(db, payload)
+        for payload in [*normalized_food, *normalized_drug]
+    )
 
 
 def sync_recalls(
@@ -224,7 +246,8 @@ def sync_recalls(
     sync_date = _today_fda_date()
 
     print(
-        f"Syncing recalls for day {sync_date} (max {max_new_per_source} per source, max total {max_total})"
+        f"Syncing recalls for day {sync_date} "
+        f"(checking up to {max_new_per_source} per source, max total {max_total})"
     )
 
     food_raw = _fetch_food_recalls(limit=max_new_per_source)
@@ -240,22 +263,8 @@ def sync_recalls(
 
     inserted = 0
 
-    # If we already have the newest source date, we can skip inserts.
-    if latest_stored_report_date and latest_source_report_date:
-        if latest_source_report_date <= latest_stored_report_date:
-            total_after = db.query(RecallItem).count()
-            return {
-                "sync_date": sync_date,
-                "food_fetched": len(food_raw),
-                "drug_fetched": len(drug_raw),
-                "inserted": 0,
-                "trimmed": 0,
-                "total_after": total_after,
-                "latest_stored_report_date": latest_stored_report_date,
-                "latest_source_report_date": latest_source_report_date,
-                "did_sync": False,
-            }
-
+    # Always inspect the fetched window. report_date is useful diagnostic
+    # metadata, but it is not a safe unique synchronization cursor.
     for payload in [*normalized_food, *normalized_drug]:
         if _insert_recall_if_new(db, payload):
             inserted += 1
@@ -274,7 +283,8 @@ def sync_recalls(
         "total_after": total_after,
         "latest_stored_report_date": latest_stored_report_date,
         "latest_source_report_date": latest_source_report_date,
-        "did_sync": True,
+        "did_sync": inserted > 0,
+        "checked_sources": True,
     }
 
 
@@ -328,7 +338,10 @@ def get_recalls_from_db(
 
         if state_name:
             state_filter = or_(
+                RecallItem.distribution.ilike(state_code),
+                RecallItem.distribution.ilike(f"{state_code},%"),
                 RecallItem.distribution.ilike(f"%, {state_code},%"),
+                RecallItem.distribution.ilike(f"%, {state_code}"),
                 RecallItem.distribution.ilike(f"%{state_name}%"),
                 RecallItem.distribution.ilike("%nationwide%"),
                 RecallItem.distribution.ilike("%United States%"),
