@@ -15,7 +15,7 @@ from sqlalchemy import or_, func, and_
 OPENFDA_BASE = "https://api.fda.gov"
 DEFAULT_TIMEOUT = 20
 MAX_TOTAL_RECALLS = 520
-MAX_NEW_PER_SOURCE = 40
+MAX_NEW_PER_SOURCE = 100
 
 
 def _safe_get(d: Dict[str, Any], key: str) -> Optional[str]:
@@ -124,6 +124,86 @@ def _recall_exists(db: Session, source: str, recall_number: Optional[str]) -> bo
     return existing is not None
 
 
+def _load_existing_recall_identities(
+    db: Session,
+) -> tuple[
+    set[tuple[str, str]],
+    set[tuple[str, str, Optional[str], Optional[str]]],
+]:
+    """
+    Load the small stored recall identity set in one query.
+
+    RecallItem is already capped by MAX_TOTAL_RECALLS, so loading these few
+    identity columns is substantially cheaper than issuing one SELECT for
+    every FDA payload.
+    """
+    rows = (
+        db.query(
+            RecallItem.source,
+            RecallItem.recall_number,
+            RecallItem.title,
+            RecallItem.company,
+            RecallItem.recall_date,
+        )
+        .all()
+    )
+
+    numbered: set[tuple[str, str]] = set()
+    fallback: set[tuple[str, str, Optional[str], Optional[str]]] = set()
+
+    for source, recall_number, title, company, recall_date in rows:
+        if recall_number:
+            numbered.add((source, recall_number))
+        else:
+            fallback.add((source, title, company, recall_date))
+
+    return numbered, fallback
+
+
+def _get_new_payloads(
+    db: Session,
+    payloads: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Return only payloads that are not already stored.
+
+    This performs one DB query for the existing identity set and then compares
+    all FDA results in memory. It also deduplicates duplicate identities inside
+    the same fetched batch.
+    """
+    existing_numbered, existing_fallback = _load_existing_recall_identities(db)
+    new_payloads: List[Dict[str, Any]] = []
+
+    for payload in payloads:
+        source = payload["source"]
+        recall_number = payload.get("recall_number")
+
+        if recall_number:
+            identity = (source, recall_number)
+
+            if identity in existing_numbered:
+                continue
+
+            existing_numbered.add(identity)
+            new_payloads.append(payload)
+            continue
+
+        fallback_identity = (
+            source,
+            payload["title"],
+            payload.get("company"),
+            payload.get("recall_date"),
+        )
+
+        if fallback_identity in existing_fallback:
+            continue
+
+        existing_fallback.add(fallback_identity)
+        new_payloads.append(payload)
+
+    return new_payloads
+
+
 def _insert_recall_if_new(db: Session, payload: Dict[str, Any]) -> bool:
     source = payload["source"]
     recall_number = payload.get("recall_number")
@@ -194,25 +274,29 @@ def _get_latest_report_date_from_payloads(payloads: List[Dict[str, Any]]) -> Opt
     return max(dates)
 
 
-def should_sync_recalls(db: Session, max_new_per_source: int = MAX_NEW_PER_SOURCE) -> bool:
-    latest_stored = get_latest_stored_report_date(db)
+def should_sync_recalls(
+    db: Session,
+    max_new_per_source: int = MAX_NEW_PER_SOURCE,
+) -> bool:
+    """
+    Check the latest FDA windows for any identity not already stored.
 
-    # First sync: DB empty or no report_date stored yet
-    if latest_stored is None:
-        return True
-
+    report_date is intentionally not used as the only cursor because multiple
+    recalls can share a report date. Unlike the previous revision, this does
+    not issue one DB query per payload.
+    """
     food_raw = _fetch_food_recalls(limit=max_new_per_source)
     drug_raw = _fetch_drug_recalls(limit=max_new_per_source)
 
-    normalized_food = [_normalize_food_item(item) for item in food_raw]
-    normalized_drug = [_normalize_drug_item(item) for item in drug_raw]
+    normalized = [
+        *[_normalize_food_item(item) for item in food_raw],
+        *[_normalize_drug_item(item) for item in drug_raw],
+    ]
 
-    latest_source = _get_latest_report_date_from_payloads([*normalized_food, *normalized_drug])
-
-    if latest_source is None:
+    if not normalized:
         return False
 
-    return latest_source > latest_stored
+    return bool(_get_new_payloads(db, normalized))
 
 
 def sync_recalls(
@@ -224,7 +308,8 @@ def sync_recalls(
     sync_date = _today_fda_date()
 
     print(
-        f"Syncing recalls for day {sync_date} (max {max_new_per_source} per source, max total {max_total})"
+        f"Syncing recalls for day {sync_date} "
+        f"(checking up to {max_new_per_source} per source, max total {max_total})"
     )
 
     food_raw = _fetch_food_recalls(limit=max_new_per_source)
@@ -232,38 +317,29 @@ def sync_recalls(
 
     normalized_food = [_normalize_food_item(item) for item in food_raw]
     normalized_drug = [_normalize_drug_item(item) for item in drug_raw]
+    normalized_all = [*normalized_food, *normalized_drug]
 
     latest_stored_report_date = get_latest_stored_report_date(db)
     latest_source_report_date = _get_latest_report_date_from_payloads(
-        [*normalized_food, *normalized_drug]
+        normalized_all
     )
 
-    inserted = 0
+    # report_date remains useful diagnostic metadata, but it is not a unique
+    # synchronization cursor. Compare actual recall identities instead.
+    new_payloads = _get_new_payloads(db, normalized_all)
+    inserted = len(new_payloads)
 
-    # If we already have the newest source date, we can skip inserts.
-    if latest_stored_report_date and latest_source_report_date:
-        if latest_source_report_date <= latest_stored_report_date:
-            total_after = db.query(RecallItem).count()
-            return {
-                "sync_date": sync_date,
-                "food_fetched": len(food_raw),
-                "drug_fetched": len(drug_raw),
-                "inserted": 0,
-                "trimmed": 0,
-                "total_after": total_after,
-                "latest_stored_report_date": latest_stored_report_date,
-                "latest_source_report_date": latest_source_report_date,
-                "did_sync": False,
-            }
+    try:
+        if new_payloads:
+            db.add_all(RecallItem(**payload) for payload in new_payloads)
+            db.commit()
 
-    for payload in [*normalized_food, *normalized_drug]:
-        if _insert_recall_if_new(db, payload):
-            inserted += 1
+        trimmed = trim_old_recalls(db, max_total=max_total)
+        total_after = db.query(RecallItem).count()
 
-    db.commit()
-
-    trimmed = trim_old_recalls(db, max_total=max_total)
-    total_after = db.query(RecallItem).count()
+    except Exception:
+        db.rollback()
+        raise
 
     return {
         "sync_date": sync_date,
@@ -274,7 +350,8 @@ def sync_recalls(
         "total_after": total_after,
         "latest_stored_report_date": latest_stored_report_date,
         "latest_source_report_date": latest_source_report_date,
-        "did_sync": True,
+        "did_sync": inserted > 0,
+        "checked_sources": True,
     }
 
 
@@ -328,7 +405,10 @@ def get_recalls_from_db(
 
         if state_name:
             state_filter = or_(
+                RecallItem.distribution.ilike(state_code),
+                RecallItem.distribution.ilike(f"{state_code},%"),
                 RecallItem.distribution.ilike(f"%, {state_code},%"),
+                RecallItem.distribution.ilike(f"%, {state_code}"),
                 RecallItem.distribution.ilike(f"%{state_name}%"),
                 RecallItem.distribution.ilike("%nationwide%"),
                 RecallItem.distribution.ilike("%United States%"),
