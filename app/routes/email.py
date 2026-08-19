@@ -34,7 +34,7 @@ from app.scripts.validator import validate_new_password
 router = APIRouter()
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
-APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:3000")
+CLIENT_BASE_URL = os.getenv("CLIENT_BASE_URL", "http://localhost:3000")
 RESEND_MIN_INTERVAL = int(os.getenv("RESEND_MIN_INTERVAL", "60"))
 
 
@@ -43,7 +43,7 @@ def _verification_link(token: str) -> str:
 
 
 def _password_reset_link(token: str) -> str:
-    return f"{APP_BASE_URL}/reset-password?token={token}"
+    return f"{CLIENT_BASE_URL}/reset-password?token={token}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ def verify_email(token: str = Query(...), db: Session = Depends(get_db)):
         data = verify_email_token(token)
     except ValueError as e:
         return RedirectResponse(
-            url=f"{APP_BASE_URL}/verify-email/error?reason={str(e)}",
+            url=f"{CLIENT_BASE_URL}/verify-email/error?reason={str(e)}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -118,7 +118,7 @@ def verify_email(token: str = Query(...), db: Session = Depends(get_db)):
 
     if not user:
         return RedirectResponse(
-            url=f"{APP_BASE_URL}/verify-email/error?reason=User not found",
+            url=f"{CLIENT_BASE_URL}/verify-email/error?reason=User not found",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -126,19 +126,19 @@ def verify_email(token: str = Query(...), db: Session = Depends(get_db)):
         current_email = canonicalize_email(decrypt_email(user.email_enc))
     except Exception:
         return RedirectResponse(
-            url=f"{APP_BASE_URL}/verify-email/error?reason=Unable to verify account email",
+            url=f"{CLIENT_BASE_URL}/verify-email/error?reason=Unable to verify account email",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
     if current_email != canonicalize_email(data["email"]):
         return RedirectResponse(
-            url=f"{APP_BASE_URL}/verify-email/error?reason=Token/email mismatch",
+            url=f"{CLIENT_BASE_URL}/verify-email/error?reason=Token/email mismatch",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
     if user.is_email_verified:
         return RedirectResponse(
-            url=f"{APP_BASE_URL}/verify-email/already-verified",
+            url=f"{CLIENT_BASE_URL}/verify-email/already-verified",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -150,7 +150,7 @@ def verify_email(token: str = Query(...), db: Session = Depends(get_db)):
     db.commit()
 
     return RedirectResponse(
-        url=f"{APP_BASE_URL}/verify-email/success",
+        url=f"{CLIENT_BASE_URL}/verify-email/success",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
