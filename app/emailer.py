@@ -18,7 +18,11 @@ def _get_provider() -> EmailProvider:
 
 
 def _get_from_email() -> str:
-    value = os.getenv("EMAIL_FROM", "GermFx <onboarding@resend.dev>")
+    # Production sender for the verified GermFx domain.
+    value = os.getenv("EMAIL_FROM", "GermFx <no-reply@germfx.com>")
+
+    # Local / Resend test sender:
+    # value = os.getenv("EMAIL_FROM", "GermFx <onboarding@resend.dev>")
 
     return value
 
