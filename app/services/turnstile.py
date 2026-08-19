@@ -143,4 +143,20 @@ def verify_turnstile_token(
             },
         )
 
+    # If the caller supplied an expected action, require Cloudflare's
+    # verified action to match it exactly. This prevents a valid token
+    # generated for one protected flow (for example, "register") from
+    # being accepted by another flow (for example, "login").
+    if action:
+        verified_action = str(data.get("action") or "").strip()
+
+        if verified_action != action:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "message": "Turnstile verification failed. Please try again.",
+                    "code": "TURNSTILE_ACTION_MISMATCH",
+                },
+            )
+
     return data
