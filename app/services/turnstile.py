@@ -14,6 +14,12 @@ TURNSTILE_SITEVERIFY_URL = (
     "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 )
 
+# Cloudflare's official always-pass Turnstile test secret.
+# Siteverify returns action="test" when this credential is used locally.
+TURNSTILE_ALWAYS_PASS_TEST_SECRET = (
+    "1x0000000000000000000000000000000AA"
+)
+
 
 def is_turnstile_enabled() -> bool:
     return os.getenv("TURNSTILE_ENABLED", "false").strip().lower() in {
@@ -143,11 +149,16 @@ def verify_turnstile_token(
             },
         )
 
-    # If the caller supplied an expected action, require Cloudflare's
-    # verified action to match it exactly. This prevents a valid token
-    # generated for one protected flow (for example, "register") from
-    # being accepted by another flow (for example, "login").
-    if action:
+    # Cloudflare's official local test credentials return action="test"
+    # instead of the action supplied by the widget. Skip only the action
+    # comparison for that known test secret.
+    using_cloudflare_test_secret = (
+        secret_key == TURNSTILE_ALWAYS_PASS_TEST_SECRET
+    )
+
+    # Real/production credentials must still return the exact action
+    # expected by the protected route.
+    if action and not using_cloudflare_test_secret:
         verified_action = str(data.get("action") or "").strip()
 
         if verified_action != action:
