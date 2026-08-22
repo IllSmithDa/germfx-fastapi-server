@@ -3,7 +3,7 @@ from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import Base, engine
-from app.routes import account_danger, account_recovery, admin_activities, admin_drug_details, admin_drug_indexes, admin_usage_limits, admin_users, articles, auth, billing, drug_detail_export, google_auth, reactions, drug_detail, email, safety_warnings, saved_items, side_effects, suggestions, usage_limits, user_feedback, user_medications, user_detail, reports, reports_export, recalls, user_settings, symptom_logs, rxnorm_test, dailymed_test, brave_search_test
+from app.routes import account_danger, account_recovery, admin_activities, admin_drug_details, admin_drug_indexes, admin_usage_limits, admin_users, articles, auth, billing, content_detail, drug_detail_export, google_auth, reactions, drug_detail, email, safety_warnings, saved_items, side_effects, suggestions, usage_limits, user_feedback, user_medications, user_detail, reports, reports_export, recalls, user_settings, symptom_logs, rxnorm_test, dailymed_test, brave_search_test
 
 app = FastAPI(title="GermFx FastAPI Backend")
 
@@ -73,6 +73,7 @@ api.include_router(billing.router, prefix="/billing", tags=["billing"])
 api.include_router(admin_drug_details.router, prefix="/admin", tags=["admin-drug-detail"])
 api.include_router(user_feedback.router, prefix="/feedback", tags=["user-feedback"])
 api.include_router(user_feedback.admin_router, prefix="/admin/feedback", tags=["admin-feedback"])
+api.include_router(content_detail.router, prefix="/content-detail", tags=["content-detail"])
 # Mount the API group
 app.include_router(api)
 
